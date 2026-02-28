@@ -65,9 +65,9 @@ register_hooks() {
     tmp=$(mktemp)
 
     jq '
-      .PreCompact = (.PreCompact // []) + [{"hooks": [{"type": "command", "command": "'"$INSTALL_BIN/starfix-precompact"'", "timeout": 30}]}] |
-      .SessionStart = (.SessionStart // []) + [{"hooks": [{"type": "command", "command": "'"$INSTALL_BIN/starfix-sessionstart"'", "timeout": 15}]}] |
-      .UserPromptSubmit = (.UserPromptSubmit // []) + [{"hooks": [{"type": "command", "command": "'"$INSTALL_BIN/starfix-userpromptsubmit"'", "timeout": 15}]}]
+      .hooks.PreCompact = (.hooks.PreCompact // []) + [{"hooks": [{"type": "command", "command": "'"$INSTALL_BIN/starfix-precompact"'", "timeout": 30}]}] |
+      .hooks.SessionStart = (.hooks.SessionStart // []) + [{"hooks": [{"type": "command", "command": "'"$INSTALL_BIN/starfix-sessionstart"'", "timeout": 15}]}] |
+      .hooks.UserPromptSubmit = (.hooks.UserPromptSubmit // []) + [{"hooks": [{"type": "command", "command": "'"$INSTALL_BIN/starfix-userpromptsubmit"'", "timeout": 15}]}]
     ' "$SETTINGS_FILE" > "$tmp" && mv "$tmp" "$SETTINGS_FILE"
 
     echo "  Hooks registered in $SETTINGS_FILE"
@@ -78,9 +78,9 @@ remove_hooks() {
     tmp=$(mktemp)
 
     jq '
-      .PreCompact = [.PreCompact[]? | select(.hooks[0].command | test("starfix") | not)] |
-      .SessionStart = [.SessionStart[]? | select(.hooks[0].command | test("starfix") | not)] |
-      .UserPromptSubmit = [.UserPromptSubmit[]? | select(.hooks[0].command | test("starfix") | not)]
+      .hooks.PreCompact = [.hooks.PreCompact[]? | select(.hooks[0].command | test("starfix") | not)] |
+      .hooks.SessionStart = [.hooks.SessionStart[]? | select(.hooks[0].command | test("starfix") | not)] |
+      .hooks.UserPromptSubmit = [.hooks.UserPromptSubmit[]? | select(.hooks[0].command | test("starfix") | not)]
     ' "$SETTINGS_FILE" > "$tmp" && mv "$tmp" "$SETTINGS_FILE"
 
     echo "  Hooks removed from $SETTINGS_FILE"
