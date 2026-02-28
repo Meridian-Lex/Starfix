@@ -2,6 +2,7 @@ package context_test
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -45,6 +46,34 @@ func TestBuildCore_MissingFilesSkipped(t *testing.T) {
 		StatePath:     "/nonexistent/STATE.md",
 	}
 	payload := starfixctx.BuildCore(cfg)
+	_ = payload
+}
+
+func TestBuildProject_WithGit(t *testing.T) {
+	dir := t.TempDir()
+	exec.Command("git", "-C", dir, "init").Run()
+	exec.Command("git", "-C", dir, "commit", "--allow-empty", "-m", "init").Run()
+ // IDENTITY-EXCEPTION: functional internal reference — not for public exposure
+	writeFile(t, filepath.Join(dir, "CLAUDE.md"), "# Project rules\ndo not break things")
+
+	payload := starfixctx.BuildProject(dir)
+
+	if !strings.Contains(payload, "Project rules") {
+  // IDENTITY-EXCEPTION: functional internal reference — not for public exposure
+		t.Error("payload should contain CLAUDE.md content")
+	}
+}
+
+func TestBuildProject_NoProjectDir(t *testing.T) {
+	payload := starfixctx.BuildProject("")
+	if payload != "" {
+		t.Errorf("expected empty payload for empty dir, got: %q", payload)
+	}
+}
+
+func TestBuildProject_NoClaudeMd(t *testing.T) {
+	dir := t.TempDir()
+	payload := starfixctx.BuildProject(dir)
 	_ = payload
 }
 
