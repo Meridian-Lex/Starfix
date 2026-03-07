@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/meridian-lex/starfix/internal/config"
 	"github.com/meridian-lex/starfix/internal/hook"
@@ -62,6 +63,42 @@ func TestPreCompact_IncrementsCount_RalphMode(t *testing.T) {
 	s, _ := state.Load(dir, "session-ralph")
 	if s.CompactionCount != 2 {
 		t.Errorf("CompactionCount: got %d, want 2", s.CompactionCount)
+	}
+}
+
+func TestPreCompact_RalphEpochReset(t *testing.T) {
+	// Simulates two ralph loops in the same session.
+	// After the first loop's lock is removed and a new one written (new mtime),
+	// the count should reset to 0 and escalation should clear.
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	cfg.TelegramEnabled = false
+	input := hookInput("session-epoch")
+
+	// --- First ralph loop: 3 compactions ---
+	writeLock(t, cfg.RalphLockPath)
+	for i := 0; i < 3; i++ {
+		hook.HandlePreCompact(input, cfg, dir)
+	}
+	s1, _ := state.Load(dir, "session-epoch")
+	if s1.CompactionCount != 3 {
+		t.Errorf("after first loop: got count %d, want 3", s1.CompactionCount)
+	}
+
+	// --- Simulate loop end + new loop start: recreate lock with newer mtime ---
+	// Remove and rewrite the lock file so its mtime is strictly newer.
+	os.Remove(cfg.RalphLockPath)
+	time.Sleep(10 * time.Millisecond) // ensure mtime advances
+	writeLock(t, cfg.RalphLockPath)
+
+	// --- Second ralph loop: first compaction should reset count to 1 ---
+	hook.HandlePreCompact(input, cfg, dir)
+	s2, _ := state.Load(dir, "session-epoch")
+	if s2.CompactionCount != 1 {
+		t.Errorf("after epoch reset: got count %d, want 1 (reset + 1 new compaction)", s2.CompactionCount)
+	}
+	if s2.EscalationPending {
+		t.Error("EscalationPending should be cleared after epoch reset")
 	}
 }
 

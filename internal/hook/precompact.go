@@ -81,6 +81,24 @@ func HandlePreCompact(input Input, cfg *config.Config, baseDir string) {
 		return
 	}
 
+	// Ralph epoch detection: if the ralph lock file has been recreated since we
+	// last saw it (new loop started within the same session), reset the counter
+	// and clear any prior escalation so the fresh loop gets a clean slate.
+	if mode == modeRalph {
+		if info, err := os.Stat(cfg.RalphLockPath); err == nil {
+			if info.ModTime().After(s.LastRalphEpochStart) {
+				if s.CompactionCount > 0 {
+					logEvent(cfg.LogPath, input.SessionID, "RESET",
+						fmt.Sprintf("new ralph epoch (lock mtime %s) — resetting count from %d",
+							info.ModTime().UTC().Format(time.RFC3339), s.CompactionCount))
+				}
+				s.CompactionCount = 0
+				s.EscalationPending = false
+				s.LastRalphEpochStart = info.ModTime()
+			}
+		}
+	}
+
 	s.CompactionCount++
 	if err := s.Save(); err != nil {
 		logEvent(cfg.LogPath, input.SessionID, "ERROR", fmt.Sprintf("save state: %v", err))

@@ -18,6 +18,11 @@ type SessionState struct {
 	TimeoutFired      bool      `json:"timeout_fired"`
 	TimeoutAction     string    `json:"timeout_action"`
 
+	// LastRalphEpochStart tracks the mtime of RALPH-LOOP.lock when we last
+	// initialised a ralph epoch. When the lock is recreated (new loop started),
+	// its mtime will be newer and we reset CompactionCount for the fresh loop.
+	LastRalphEpochStart time.Time `json:"last_ralph_epoch_start,omitempty"`
+
 	baseDir   string
 	sessionID string
 }
