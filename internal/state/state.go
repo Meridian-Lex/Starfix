@@ -67,6 +67,19 @@ func (s *SessionState) IncrementCompactionCount() error {
 	return s.Save()
 }
 
+// ResetCompactionCount sets the compaction count to zero and saves state.
+func (s *SessionState) ResetCompactionCount() error {
+	s.mu.Lock()
+	s.CompactionCount = 0
+	s.mu.Unlock()
+	return s.Save()
+}
+
+// StateFile returns the path to the state.json file.
+func (s *SessionState) StateFile() string {
+	return s.stateFile()
+}
+
 // Dir returns the session-specific directory.
 func (s *SessionState) Dir() string {
 	return filepath.Join(s.baseDir, "sessions", s.sessionID)
