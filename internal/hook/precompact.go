@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/meridian-lex/starfix/internal/config"
@@ -41,7 +42,8 @@ func activeMode(cfg *config.Config) operationalMode {
 }
 
 // thresholds returns (summary, escalation) counts for the given mode.
-// Zero mode-specific values fall back to the global SummaryThreshold/EscalationThreshold.
+// Mode-specific values take precedence; if a mode-specific threshold is zero
+// (unset in config), the global fallback is used instead.
 func thresholds(mode operationalMode, cfg *config.Config) (summary, escalation int) {
 	switch mode {
 	case modeRalph:
@@ -49,21 +51,36 @@ func thresholds(mode operationalMode, cfg *config.Config) (summary, escalation i
 	case modeAutonomous:
 		summary, escalation = cfg.AutonomousSummaryThreshold, cfg.AutonomousEscalationThreshold
 	default:
+		// Unreachable with current modes (interactive exits before thresholds() is called);
+		// kept as a safety net for future mode additions.
 		return cfg.SummaryThreshold, cfg.EscalationThreshold
 	}
-	// Fall back to global thresholds when mode-specific values are unset (zero).
+
+	// If a mode-specific threshold is zero (not configured), fall back to the global value.
 	if summary == 0 {
 		summary = cfg.SummaryThreshold
 	}
 	if escalation == 0 {
 		escalation = cfg.EscalationThreshold
 	}
-	return summary, escalation
+	return
 }
 
 func fileExists(path string) bool {
+	if path == "" {
+		return false
+	}
 	_, err := os.Stat(path)
-	return err == nil
+	if err == nil {
+		return true
+	}
+	if os.IsNotExist(err) {
+		return false
+	}
+	// Permission errors or other stat errors: treat as present but unreadable.
+	// Use stderr since logEvent requires a valid logPath which is not available here.
+	fmt.Fprintf(os.Stderr, "[starfix] WARN: stat %s: %v (treating as present)\n", path, err)
+	return true
 }
 
 // modeLabelFor returns a human-readable label for the given operational mode.
@@ -82,13 +99,21 @@ func lockPathFor(mode operationalMode, cfg *config.Config) string {
 	return cfg.RalphLockPath
 }
 
-// detectNewLoop checks whether a new autonomous/ralph loop has started by comparing
-// lock file mtime against the state file mtime. Resets the compaction counter if a
-// fresh loop is detected.
+// detectNewLoop checks whether a new autonomous/ralph loop has started and
+// resets the compaction counter if a fresh loop is detected.
+//
+// For ralph mode, detection delegates to detectRalphLoopReset which uses an
+// inode+mtime token (LastRalphEpochToken) for stronger epoch identification.
+//
+// For autonomous mode, the lock file mtime is compared against the state file mtime:
+// if the lock is newer than the last state write, a new autonomous loop started.
 func detectNewLoop(s *state.SessionState, mode operationalMode, cfg *config.Config, sessionID string) {
-	lockPath := lockPathFor(mode, cfg)
-
-	lockInfo, err := os.Stat(lockPath)
+	if mode == modeRalph {
+		detectRalphLoopReset(s, cfg, sessionID)
+		return
+	}
+	// Autonomous mode: compare lock mtime against state file mtime.
+	lockInfo, err := os.Stat(cfg.AutonomousLockPath)
 	if err != nil {
 		return
 	}
@@ -98,14 +123,90 @@ func detectNewLoop(s *state.SessionState, mode operationalMode, cfg *config.Conf
 	}
 	if lockInfo.ModTime().After(stateInfo.ModTime()) {
 		prevCount := s.CompactionCount
-		if err := s.ResetCompactionCount(); err != nil {
+		if err := s.ResetLoop(); err != nil {
 			logEvent(cfg.LogPath, sessionID, "ERROR",
-				fmt.Sprintf("failed to reset compaction count from %d for new %s loop: %v",
-					prevCount, modeLabelFor(mode), err))
+				fmt.Sprintf("failed to reset compaction count from %d for new autonomous loop: %v",
+					prevCount, err))
 		} else {
 			logEvent(cfg.LogPath, sessionID, "RESET",
-				fmt.Sprintf("new %s loop detected — reset compaction count from %d",
-					modeLabelFor(mode), prevCount))
+				fmt.Sprintf("new autonomous loop detected — reset compaction count from %d", prevCount))
+		}
+	}
+}
+
+// ralphEpochToken builds a stable identifier for the current RALPH-LOOP.lock
+// file. It combines the inode number (from syscall.Stat_t) with the mtime in
+// nanoseconds so that two lock files written within the same mtime granularity
+// (e.g. on HFS+ or FAT with 1–2 s resolution) are still distinguishable.
+// If the inode cannot be obtained the token falls back to mtime-only, which is
+// still used for comparison — the caller must treat a change in token as a new
+// epoch regardless of which fallback path was taken.
+func ralphEpochToken(info os.FileInfo) string {
+	if st, ok := info.Sys().(*syscall.Stat_t); ok {
+		return fmt.Sprintf("%d:%d", st.Ino, info.ModTime().UnixNano())
+	}
+	// Fallback: mtime only (less robust but safe on exotic filesystems).
+	return fmt.Sprintf("mtime:%d", info.ModTime().UnixNano())
+}
+
+// detectRalphLoopReset checks for a new or first-time ralph loop and resets state
+// if a fresh loop is detected.
+//
+//   - If LastRalphEpochToken is empty (first ralph compaction this session), any
+//     autonomous counts accumulated prior are cleared (cross-mode reset) and the
+//     token is anchored to the current lock file.
+//   - Otherwise, the current lock file's token (inode + mtime) is compared against
+//     LastRalphEpochToken. A different token means the lock was recreated — a new
+//     loop started. This is more robust than mtime alone because two lock files
+//     created within the same mtime granularity get different inode numbers.
+//   - LastRalphEpochStart is kept in sync for human-readable diagnostics and
+//     JSON backward compatibility.
+func detectRalphLoopReset(s *state.SessionState, cfg *config.Config, sessionID string) {
+	info, err := os.Stat(cfg.RalphLockPath)
+	if err != nil {
+		return
+	}
+	token := ralphEpochToken(info)
+	lockMtime := info.ModTime()
+
+	if s.LastRalphEpochToken == "" {
+		// First time entering ralph mode this session.
+		if s.CompactionCount > 0 {
+			// Cross-mode transition: autonomous counts accumulated before ralph started.
+			logEvent(cfg.LogPath, sessionID, "RESET",
+				fmt.Sprintf("ralph mode entered from autonomous (count was %d)", s.CompactionCount))
+			s.CompactionCount = 0
+			s.EscalationPending = false
+		}
+		s.LastRalphEpochToken = token
+		s.LastRalphEpochStart = lockMtime
+		if err := s.Save(); err != nil {
+			logEvent(cfg.LogPath, sessionID, "ERROR",
+				fmt.Sprintf("failed to persist ralph epoch state: %v", err))
+		}
+		return
+	}
+
+	// Within an existing ralph epoch: compare token to detect lock file recreation.
+	if token != s.LastRalphEpochToken {
+		// Ralph lock was recreated — new loop started within this session.
+		prevCount := s.CompactionCount
+		if prevCount > 0 {
+			logEvent(cfg.LogPath, sessionID, "RESET",
+				fmt.Sprintf("new ralph epoch (token %s) — resetting count from %d",
+					token, prevCount))
+		}
+		if err := s.ResetLoop(); err != nil {
+			logEvent(cfg.LogPath, sessionID, "ERROR",
+				fmt.Sprintf("failed to reset compaction count from %d for new ralph epoch: %v",
+					prevCount, err))
+			return
+		}
+		s.LastRalphEpochToken = token
+		s.LastRalphEpochStart = lockMtime
+		if err := s.Save(); err != nil {
+			logEvent(cfg.LogPath, sessionID, "ERROR",
+				fmt.Sprintf("failed to persist ralph epoch token: %v", err))
 		}
 	}
 }
@@ -116,7 +217,9 @@ func sendCompactionSummary(s *state.SessionState, cfg *config.Config, modeLabel,
 	msg := fmt.Sprintf("[Starfix] Compaction #%d (%s) — session %s\nTimestamp: %s",
 		s.CompactionCount, modeLabel, shortID(sessionID),
 		time.Now().UTC().Format(time.RFC3339))
-	telegram.Send(cfg.TelegramBinary, msg)
+	if err := telegram.Send(cfg.TelegramBinary, msg); err != nil {
+		logEvent(cfg.LogPath, sessionID, "WARN", fmt.Sprintf("telegram summary: %v", err))
+	}
 }
 
 // killExistingWatchReply terminates any previously-spawned watch-reply process
@@ -172,6 +275,7 @@ func handleEscalation(s *state.SessionState, cfg *config.Config, modeLabel, sess
 	s.EscalationSentAt = time.Now().UTC()
 	if err := s.Save(); err != nil {
 		logEvent(cfg.LogPath, sessionID, "ERROR", fmt.Sprintf("save escalation state: %v", err))
+		return
 	}
 
 	if !cfg.TelegramEnabled {

@@ -13,11 +13,24 @@ type SessionState struct {
 	CompactionCount   int       `json:"compaction_count"`
 	EscalationPending bool      `json:"escalation_pending"`
 	TriageDefault     string    `json:"triage_default"`
-	EscalationSentAt  time.Time `json:"escalation_sent_at,omitempty"`
+	EscalationSentAt  time.Time `json:"escalation_sent_at"`
 	ReplyReceived     bool      `json:"reply_received"`
 	ReplyText         string    `json:"reply_text"`
 	TimeoutFired      bool      `json:"timeout_fired"`
 	TimeoutAction     string    `json:"timeout_action"`
+
+	// LastRalphEpochStart tracks the mtime of RALPH-LOOP.lock when we last
+	// initialised a ralph epoch. Retained for JSON backward compatibility.
+	// New epoch detection uses LastRalphEpochToken instead.
+	LastRalphEpochStart time.Time `json:"last_ralph_epoch_start"`
+
+	// LastRalphEpochToken is a stable fingerprint combining the lock file's
+	// inode number and mtime (e.g. "12345:1709856000000000000"). Using the
+	// inode means two lock files written within the same mtime granularity are
+	// still distinguishable, making epoch detection robust on coarse-grained
+	// filesystems such as HFS+ or FAT where mtime resolution is 1–2 seconds.
+	// Falls back to mtime-only when Sys() cannot be cast to *syscall.Stat_t.
+	LastRalphEpochToken string `json:"last_ralph_epoch_token,omitempty"`
 
 	baseDir   string
 	sessionID string
@@ -77,6 +90,16 @@ func (s *SessionState) ResetCompactionCount() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.CompactionCount = 0
+	return s.saveUnlocked()
+}
+
+// ResetLoop clears compaction count and escalation state, then saves.
+// Used when a new autonomous or ralph loop is detected to provide a clean slate.
+func (s *SessionState) ResetLoop() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.CompactionCount = 0
+	s.EscalationPending = false
 	return s.saveUnlocked()
 }
 

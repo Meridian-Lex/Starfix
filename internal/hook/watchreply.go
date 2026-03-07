@@ -38,6 +38,13 @@ func RunWatchReply(sessionID string, cfg *config.Config, baseDir string) {
 	for {
 		select {
 		case <-deadlineCh:
+			// Reload state before acting — ResetLoop may have cleared EscalationPending.
+			if fresh, err := state.Load(baseDir, sessionID); err == nil {
+				s = fresh
+			}
+			if !s.EscalationPending {
+				return
+			}
 			// Timeout path
 			s.TimeoutFired = true
 			s.TimeoutAction = s.TriageDefault
@@ -52,6 +59,13 @@ func RunWatchReply(sessionID string, cfg *config.Config, baseDir string) {
 			return
 
 		case <-ticker.C:
+			// Reload state each tick — ResetLoop may have cleared EscalationPending.
+			if fresh, err := state.Load(baseDir, sessionID); err == nil {
+				s = fresh
+			}
+			if !s.EscalationPending {
+				return
+			}
 			reply, found := telegram.CheckInbound(
 				cfg.TelegramInboundLog,
 				s.EscalationSentAt,
