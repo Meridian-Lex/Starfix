@@ -51,7 +51,12 @@ func Load(baseDir, sessionID string) (*SessionState, error) {
 func (s *SessionState) Save() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.saveUnlocked()
+}
 
+// saveUnlocked writes session state to disk without acquiring the mutex.
+// Callers must hold s.mu.
+func (s *SessionState) saveUnlocked() error {
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
@@ -62,17 +67,17 @@ func (s *SessionState) Save() error {
 // IncrementCompactionCount atomically increments the compaction count and saves state.
 func (s *SessionState) IncrementCompactionCount() error {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.CompactionCount++
-	s.mu.Unlock()
-	return s.Save()
+	return s.saveUnlocked()
 }
 
 // ResetCompactionCount sets the compaction count to zero and saves state.
 func (s *SessionState) ResetCompactionCount() error {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.CompactionCount = 0
-	s.mu.Unlock()
-	return s.Save()
+	return s.saveUnlocked()
 }
 
 // StateFile returns the path to the state.json file.
