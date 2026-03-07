@@ -20,9 +20,17 @@ type SessionState struct {
 	TimeoutAction     string    `json:"timeout_action"`
 
 	// LastRalphEpochStart tracks the mtime of RALPH-LOOP.lock when we last
-	// initialised a ralph epoch. When the lock is recreated (new loop started),
-	// its mtime will be newer and we reset CompactionCount for the fresh loop.
+	// initialised a ralph epoch. Retained for JSON backward compatibility.
+	// New epoch detection uses LastRalphEpochToken instead.
 	LastRalphEpochStart time.Time `json:"last_ralph_epoch_start"`
+
+	// LastRalphEpochToken is a stable fingerprint combining the lock file's
+	// inode number and mtime (e.g. "12345:1709856000000000000"). Using the
+	// inode means two lock files written within the same mtime granularity are
+	// still distinguishable, making epoch detection robust on coarse-grained
+	// filesystems such as HFS+ or FAT where mtime resolution is 1–2 seconds.
+	// Falls back to mtime-only when Sys() cannot be cast to *syscall.Stat_t.
+	LastRalphEpochToken string `json:"last_ralph_epoch_token,omitempty"`
 
 	baseDir   string
 	sessionID string

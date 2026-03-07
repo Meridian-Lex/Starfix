@@ -165,12 +165,10 @@ func TestPreCompact_ResetsCount_NewRalphLoop(t *testing.T) {
 		t.Fatalf("expected CompactionCount 3 before reset, got %d", s.CompactionCount)
 	}
 
-	// Simulate a new ralph loop by touching the lock file so its mtime is after
-	// the state file mtime.
-	stateFile := s.StateFile()
-	past := time.Now().Add(-10 * time.Second)
-	os.Chtimes(stateFile, past, past)
-	// Re-write lock to ensure it has a fresh mtime.
+	// Simulate a new ralph loop: remove the lock file and create a fresh one.
+	// The new file gets a different inode, producing a different epoch token
+	// regardless of filesystem mtime granularity.
+	os.Remove(cfg.RalphLockPath)
 	writeLock(t, cfg.RalphLockPath)
 
 	// Next compaction should reset before incrementing, resulting in count 1.
@@ -225,15 +223,14 @@ func TestPreCompact_NoReset_OldLockFile(t *testing.T) {
 		t.Fatalf("expected CompactionCount 3 before check, got %d", s.CompactionCount)
 	}
 
-	// Set lock file mtime to the past (older than state file) -- should NOT reset.
-	past := time.Now().Add(-10 * time.Second)
-	os.Chtimes(cfg.RalphLockPath, past, past)
+	// The lock file is the same file (same inode, same mtime) — epoch token
+	// is unchanged so no reset should occur. Simply proceed to the next compaction.
 
 	// Next compaction should just increment to 4, no reset.
 	hook.HandlePreCompact(input, cfg, dir)
 	s2, _ := state.Load(dir, "session-ralph-old-lock")
 	if s2.CompactionCount != 4 {
-		t.Errorf("expected CompactionCount 4 (no reset for old lock), got %d", s2.CompactionCount)
+		t.Errorf("expected CompactionCount 4 (no reset for unchanged lock), got %d", s2.CompactionCount)
 	}
 }
 

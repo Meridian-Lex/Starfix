@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/meridian-lex/starfix/internal/config"
@@ -101,11 +102,8 @@ func lockPathFor(mode operationalMode, cfg *config.Config) string {
 // detectNewLoop checks whether a new autonomous/ralph loop has started and
 // resets the compaction counter if a fresh loop is detected.
 //
-// For ralph mode, this uses the lock file mtime tracked via LastRalphEpochStart:
-//   - If LastRalphEpochStart is zero, ralph is being entered for the first time
-//     this session; any accumulated autonomous count is cleared (cross-mode reset).
-//   - If the ralph lock has a newer mtime than LastRalphEpochStart, a new ralph loop
-//     started within the session; reset and record the new epoch.
+// For ralph mode, detection delegates to detectRalphLoopReset which uses an
+// inode+mtime token (LastRalphEpochToken) for stronger epoch identification.
 //
 // For autonomous mode, the lock file mtime is compared against the state file mtime:
 // if the lock is newer than the last state write, a new autonomous loop started.
@@ -136,23 +134,42 @@ func detectNewLoop(s *state.SessionState, mode operationalMode, cfg *config.Conf
 	}
 }
 
+// ralphEpochToken builds a stable identifier for the current RALPH-LOOP.lock
+// file. It combines the inode number (from syscall.Stat_t) with the mtime in
+// nanoseconds so that two lock files written within the same mtime granularity
+// (e.g. on HFS+ or FAT with 1–2 s resolution) are still distinguishable.
+// If the inode cannot be obtained the token falls back to mtime-only, which is
+// still used for comparison — the caller must treat a change in token as a new
+// epoch regardless of which fallback path was taken.
+func ralphEpochToken(info os.FileInfo) string {
+	if st, ok := info.Sys().(*syscall.Stat_t); ok {
+		return fmt.Sprintf("%d:%d", st.Ino, info.ModTime().UnixNano())
+	}
+	// Fallback: mtime only (less robust but safe on exotic filesystems).
+	return fmt.Sprintf("mtime:%d", info.ModTime().UnixNano())
+}
+
 // detectRalphLoopReset checks for a new or first-time ralph loop and resets state
 // if a fresh loop is detected.
 //
-//   - If LastRalphEpochStart is zero, this is the first ralph compaction this session.
-//     Any autonomous counts accumulated prior are cleared (cross-mode transition).
-//     LastRalphEpochStart is set to the current lock mtime to anchor the epoch.
-//   - Otherwise, lock mtime is compared against the state file mtime (same approach
-//     as autonomous mode): if the lock is newer than the last state write, the ralph
-//     lock was recreated after the previous compaction — a new loop started.
+//   - If LastRalphEpochToken is empty (first ralph compaction this session), any
+//     autonomous counts accumulated prior are cleared (cross-mode reset) and the
+//     token is anchored to the current lock file.
+//   - Otherwise, the current lock file's token (inode + mtime) is compared against
+//     LastRalphEpochToken. A different token means the lock was recreated — a new
+//     loop started. This is more robust than mtime alone because two lock files
+//     created within the same mtime granularity get different inode numbers.
+//   - LastRalphEpochStart is kept in sync for human-readable diagnostics and
+//     JSON backward compatibility.
 func detectRalphLoopReset(s *state.SessionState, cfg *config.Config, sessionID string) {
 	info, err := os.Stat(cfg.RalphLockPath)
 	if err != nil {
 		return
 	}
+	token := ralphEpochToken(info)
 	lockMtime := info.ModTime()
 
-	if s.LastRalphEpochStart.IsZero() {
+	if s.LastRalphEpochToken == "" {
 		// First time entering ralph mode this session.
 		if s.CompactionCount > 0 {
 			// Cross-mode transition: autonomous counts accumulated before ralph started.
@@ -164,27 +181,23 @@ func detectRalphLoopReset(s *state.SessionState, cfg *config.Config, sessionID s
 				return
 			}
 		}
+		s.LastRalphEpochToken = token
 		s.LastRalphEpochStart = lockMtime
 		if err := s.Save(); err != nil {
 			logEvent(cfg.LogPath, sessionID, "ERROR",
-				fmt.Sprintf("failed to persist ralph epoch start: %v", err))
+				fmt.Sprintf("failed to persist ralph epoch token: %v", err))
 		}
 		return
 	}
 
-	// Within an existing ralph epoch: check if the lock was recreated since the
-	// last state write (state file mtime is updated on every IncrementCompactionCount).
-	stateInfo, err := os.Stat(s.StateFile())
-	if err != nil {
-		return
-	}
-	if lockMtime.After(stateInfo.ModTime()) {
+	// Within an existing ralph epoch: compare token to detect lock file recreation.
+	if token != s.LastRalphEpochToken {
 		// Ralph lock was recreated — new loop started within this session.
 		prevCount := s.CompactionCount
 		if prevCount > 0 {
 			logEvent(cfg.LogPath, sessionID, "RESET",
-				fmt.Sprintf("new ralph epoch (lock mtime %s) — resetting count from %d",
-					lockMtime.UTC().Format(time.RFC3339), prevCount))
+				fmt.Sprintf("new ralph epoch (token %s) — resetting count from %d",
+					token, prevCount))
 		}
 		if err := s.ResetLoop(); err != nil {
 			logEvent(cfg.LogPath, sessionID, "ERROR",
@@ -192,10 +205,11 @@ func detectRalphLoopReset(s *state.SessionState, cfg *config.Config, sessionID s
 					prevCount, err))
 			return
 		}
+		s.LastRalphEpochToken = token
 		s.LastRalphEpochStart = lockMtime
 		if err := s.Save(); err != nil {
 			logEvent(cfg.LogPath, sessionID, "ERROR",
-				fmt.Sprintf("failed to persist ralph epoch start: %v", err))
+				fmt.Sprintf("failed to persist ralph epoch token: %v", err))
 		}
 	}
 }
@@ -262,6 +276,7 @@ func handleEscalation(s *state.SessionState, cfg *config.Config, modeLabel, sess
 	s.EscalationSentAt = time.Now().UTC()
 	if err := s.Save(); err != nil {
 		logEvent(cfg.LogPath, sessionID, "ERROR", fmt.Sprintf("save escalation state: %v", err))
+		return
 	}
 
 	if !cfg.TelegramEnabled {
