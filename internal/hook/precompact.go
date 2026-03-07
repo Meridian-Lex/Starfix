@@ -50,7 +50,8 @@ func thresholds(mode operationalMode, cfg *config.Config) (summary, escalation i
 	case modeAutonomous:
 		summary, escalation = cfg.AutonomousSummaryThreshold, cfg.AutonomousEscalationThreshold
 	default:
-		// General fallback for any mode without explicit thresholds (including interactive).
+		// Unreachable with current modes (interactive exits before thresholds() is called);
+		// kept as a safety net for future mode additions.
 		return cfg.SummaryThreshold, cfg.EscalationThreshold
 	}
 
@@ -100,12 +101,18 @@ func detectRalphEpochReset(s *state.SessionState, cfg *config.Config, sessionID 
 	if !info.ModTime().After(s.LastRalphEpochStart) {
 		return
 	}
-	// Only log a RESET when this is a genuine epoch transition
-	// (not the first-ever ralph compaction where LastRalphEpochStart is zero).
-	if s.CompactionCount > 0 && !s.LastRalphEpochStart.IsZero() {
+	if !s.LastRalphEpochStart.IsZero() {
+		// Genuine epoch transition: ralph lock was recreated since last seen.
+		if s.CompactionCount > 0 {
+			logEvent(cfg.LogPath, sessionID, "RESET",
+				fmt.Sprintf("new ralph epoch (lock mtime %s) — resetting count from %d",
+					info.ModTime().UTC().Format(time.RFC3339), s.CompactionCount))
+		}
+	} else if s.CompactionCount > 0 {
+		// Cross-mode transition: autonomous counts accumulated, now entering ralph
+		// for the first time in this session. Log so the reset is auditable.
 		logEvent(cfg.LogPath, sessionID, "RESET",
-			fmt.Sprintf("new ralph epoch (lock mtime %s) — resetting count from %d",
-				info.ModTime().UTC().Format(time.RFC3339), s.CompactionCount))
+			fmt.Sprintf("ralph mode entered from autonomous (count was %d)", s.CompactionCount))
 	}
 	s.CompactionCount = 0
 	s.EscalationPending = false
@@ -168,7 +175,9 @@ func handleEscalation(s *state.SessionState, cfg *config.Config, modeLabel, sess
 	s.EscalationPending = true
 	s.TriageDefault = result.Action
 	s.EscalationSentAt = time.Now().UTC()
-	s.Save()
+	if err := s.Save(); err != nil {
+		logEvent(cfg.LogPath, sessionID, "ERROR", fmt.Sprintf("save escalation state: %v", err))
+	}
 
 	if !cfg.TelegramEnabled {
 		return
@@ -213,6 +222,10 @@ func HandlePreCompact(input Input, cfg *config.Config, baseDir string) {
 	// Ralph epoch detection: if the ralph lock file has been recreated since we
 	// last saw it (new loop started within the same session), reset the counter
 	// and clear any prior escalation so the fresh loop gets a clean slate.
+	// Note: autonomous mode intentionally has NO epoch reset — autonomous compactions
+	// accumulate across the session lifetime by design. The higher autonomous thresholds
+	// are calibrated for this accumulation pattern. Ralph loops are short-lived and
+	// self-contained, so each new loop starts with a clean count.
 	if mode == modeRalph {
 		detectRalphEpochReset(s, cfg, input.SessionID)
 	}

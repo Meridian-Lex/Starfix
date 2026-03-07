@@ -206,6 +206,39 @@ func TestPreCompact_RalphEpochReset_WithBothLocks(t *testing.T) {
 	}
 }
 
+func TestPreCompact_AutonomousToRalphTransition(t *testing.T) {
+	// When compactions accumulate in autonomous mode and then ralph starts,
+	// the count should reset (ralph gets a clean slate) and the reset should
+	// be logged as a cross-mode transition.
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	cfg.TelegramEnabled = false
+	input := hookInput("session-cross-mode")
+
+	// --- Autonomous phase: accumulate 5 compactions ---
+	writeLock(t, cfg.AutonomousLockPath)
+	for i := 0; i < 5; i++ {
+		hook.HandlePreCompact(input, cfg, dir)
+	}
+	s1, _ := state.Load(dir, "session-cross-mode")
+	if s1.CompactionCount != 5 {
+		t.Fatalf("autonomous phase: got count %d, want 5", s1.CompactionCount)
+	}
+
+	// --- Transition to ralph: create ralph lock (autonomous lock remains) ---
+	writeLock(t, cfg.RalphLockPath)
+	hook.HandlePreCompact(input, cfg, dir)
+	s2, _ := state.Load(dir, "session-cross-mode")
+
+	// Ralph epoch reset should have cleared the autonomous count and started fresh.
+	if s2.CompactionCount != 1 {
+		t.Errorf("after autonomous-to-ralph transition: got count %d, want 1 (reset + 1 new)", s2.CompactionCount)
+	}
+	if s2.EscalationPending {
+		t.Error("EscalationPending should be false after cross-mode reset")
+	}
+}
+
 func TestPreCompact_SetsEscalationAtThreshold(t *testing.T) {
 	dir := t.TempDir()
 	cfg := testConfig(dir)
