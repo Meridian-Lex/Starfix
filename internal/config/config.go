@@ -19,8 +19,8 @@ type Config struct {
 	TelegramInboundLog string `yaml:"telegram_inbound_log"`
 	TelegramAdmiralID  int64  `yaml:"telegram_admiral_id"`
 
-	// Thresholds — global fallback. Used directly in interactive mode, and as
-	// fallback when a mode-specific threshold is zero (not configured).
+	// Thresholds — global fallback. Used when a mode-specific threshold is zero
+	// (not configured), or when code asks for a mode without explicit thresholds.
 	SummaryThreshold    int `yaml:"summary_threshold"`
 	EscalationThreshold int `yaml:"escalation_threshold"`
 

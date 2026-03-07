@@ -232,6 +232,32 @@ func TestPreCompact_SetsEscalationAtThreshold(t *testing.T) {
 	}
 }
 
+func TestPreCompact_ZeroThresholdFallsBackToGlobal(t *testing.T) {
+	// When a mode-specific threshold is zero (unset), the global threshold
+	// should be used as fallback. Verify this by setting ralph thresholds to 0
+	// and confirming escalation fires at the global threshold.
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	cfg.RalphSummaryThreshold = 0    // should fall back to cfg.SummaryThreshold (2)
+	cfg.RalphEscalationThreshold = 0 // should fall back to cfg.EscalationThreshold (3)
+	cfg.TelegramEnabled = false
+	writeLock(t, cfg.RalphLockPath)
+	input := hookInput("session-zero-threshold")
+
+	// 3 compactions should hit global escalation threshold (3).
+	for i := 0; i < 3; i++ {
+		hook.HandlePreCompact(input, cfg, dir)
+	}
+
+	s, _ := state.Load(dir, "session-zero-threshold")
+	if s.CompactionCount != 3 {
+		t.Errorf("CompactionCount: got %d, want 3", s.CompactionCount)
+	}
+	if !s.EscalationPending {
+		t.Error("EscalationPending should be true — global fallback threshold (3) reached with zero ralph threshold")
+	}
+}
+
 func hookInput(sessionID string) hook.Input {
 	return hook.Input{SessionID: sessionID, CWD: "/tmp"}
 }

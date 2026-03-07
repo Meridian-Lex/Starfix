@@ -109,7 +109,9 @@ func HandlePreCompact(input Input, cfg *config.Config, baseDir string) {
 	if mode == modeRalph {
 		if info, err := os.Stat(cfg.RalphLockPath); err == nil {
 			if info.ModTime().After(s.LastRalphEpochStart) {
-				if s.CompactionCount > 0 {
+				// Only log a RESET when this is a genuine epoch transition
+				// (not the first-ever ralph compaction where LastRalphEpochStart is zero).
+				if s.CompactionCount > 0 && !s.LastRalphEpochStart.IsZero() {
 					logEvent(cfg.LogPath, input.SessionID, "RESET",
 						fmt.Sprintf("new ralph epoch (lock mtime %s) — resetting count from %d",
 							info.ModTime().UTC().Format(time.RFC3339), s.CompactionCount))

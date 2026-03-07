@@ -12,7 +12,7 @@ type SessionState struct {
 	CompactionCount   int       `json:"compaction_count"`
 	EscalationPending bool      `json:"escalation_pending"`
 	TriageDefault     string    `json:"triage_default"`
-	EscalationSentAt  time.Time `json:"escalation_sent_at,omitempty"`
+	EscalationSentAt  time.Time `json:"escalation_sent_at"`
 	ReplyReceived     bool      `json:"reply_received"`
 	ReplyText         string    `json:"reply_text"`
 	TimeoutFired      bool      `json:"timeout_fired"`
@@ -21,7 +21,7 @@ type SessionState struct {
 	// LastRalphEpochStart tracks the mtime of RALPH-LOOP.lock when we last
 	// initialised a ralph epoch. When the lock is recreated (new loop started),
 	// its mtime will be newer and we reset CompactionCount for the fresh loop.
-	LastRalphEpochStart time.Time `json:"last_ralph_epoch_start,omitempty"`
+	LastRalphEpochStart time.Time `json:"last_ralph_epoch_start"`
 
 	baseDir   string
 	sessionID string
