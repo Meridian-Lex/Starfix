@@ -170,7 +170,9 @@ func handleEscalation(s *state.SessionState, cfg *config.Config, modeLabel, sess
 	s.EscalationPending = true
 	s.TriageDefault = result.Action
 	s.EscalationSentAt = time.Now().UTC()
-	s.Save()
+	if err := s.Save(); err != nil {
+		logEvent(cfg.LogPath, sessionID, "ERROR", fmt.Sprintf("save escalation state: %v", err))
+	}
 
 	if !cfg.TelegramEnabled {
 		return
