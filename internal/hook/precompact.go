@@ -58,6 +58,115 @@ func fileExists(path string) bool {
 	return err == nil
 }
 
+// modeLabelFor returns a human-readable label for the given operational mode.
+func modeLabelFor(mode operationalMode) string {
+	if mode == modeRalph {
+		return "ralph"
+	}
+	return "autonomous"
+}
+
+// lockPathFor returns the lock file path for the given operational mode.
+func lockPathFor(mode operationalMode, cfg *config.Config) string {
+	if mode == modeAutonomous {
+		return cfg.AutonomousLockPath
+	}
+	return cfg.RalphLockPath
+}
+
+// detectNewLoop checks whether a new autonomous/ralph loop has started by comparing
+// lock file mtime against the state file mtime. Resets the compaction counter if a
+// fresh loop is detected.
+func detectNewLoop(s *state.SessionState, mode operationalMode, cfg *config.Config, sessionID string) {
+	lockPath := lockPathFor(mode, cfg)
+
+	lockInfo, err := os.Stat(lockPath)
+	if err != nil {
+		return
+	}
+	stateInfo, err := os.Stat(s.StateFile())
+	if err != nil {
+		return
+	}
+	if lockInfo.ModTime().After(stateInfo.ModTime()) {
+		logEvent(cfg.LogPath, sessionID, "RESET",
+			fmt.Sprintf("new %s loop detected — resetting compaction count from %d",
+				modeLabelFor(mode), s.CompactionCount))
+		s.ResetCompactionCount()
+	}
+}
+
+// sendCompactionSummary sends a Telegram notification when the compaction count
+// reaches the summary threshold.
+func sendCompactionSummary(s *state.SessionState, cfg *config.Config, modeLabel, sessionID string) {
+	msg := fmt.Sprintf("[Starfix] Compaction #%d (%s) — session %s\nTimestamp: %s",
+		s.CompactionCount, modeLabel, shortID(sessionID),
+		time.Now().UTC().Format(time.RFC3339))
+	telegram.Send(cfg.TelegramBinary, msg)
+}
+
+// killExistingWatchReply terminates any previously-spawned watch-reply process
+// for this session (best-effort).
+func killExistingWatchReply(pidFile string) {
+	data, err := os.ReadFile(pidFile)
+	if err != nil {
+		return
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		return
+	}
+	if proc, err := os.FindProcess(pid); err == nil {
+		proc.Kill() // best-effort; ignore error if already dead
+	}
+}
+
+// spawnWatchReply starts a watch-reply subprocess and records its PID file.
+func spawnWatchReply(baseDir, sessionID, logPath string) {
+	pidFile := filepath.Join(baseDir, "sessions", sessionID, "watch-reply.pid")
+	killExistingWatchReply(pidFile)
+
+	self, _ := os.Executable()
+	cmd := exec.Command(self, "watch-reply", sessionID)
+	if err := cmd.Start(); err != nil {
+		logEvent(logPath, sessionID, "ERROR", fmt.Sprintf("start watch-reply: %v", err))
+		return
+	}
+
+	// Write PID file; if it fails, kill the spawned process and log the error.
+	if err := os.WriteFile(pidFile, []byte(strconv.Itoa(cmd.Process.Pid)), 0644); err != nil {
+		cmd.Process.Kill()
+		logEvent(logPath, sessionID, "ERROR", fmt.Sprintf("write PID file: %v", err))
+	}
+}
+
+// handleEscalation performs triage assessment and notifies the fleet admiral
+// when compaction count reaches the escalation threshold.
+func handleEscalation(s *state.SessionState, cfg *config.Config, modeLabel, sessionID, baseDir string) {
+	taskContent, _ := os.ReadFile(cfg.TaskQueuePath)
+	result := triage.Assess(triage.Input{
+		CompactionCount:  s.CompactionCount,
+		TaskQueueContent: string(taskContent),
+	})
+
+	s.EscalationPending = true
+	s.TriageDefault = result.Action
+	s.EscalationSentAt = time.Now().UTC()
+	s.Save()
+
+	if !cfg.TelegramEnabled {
+		return
+	}
+
+	msg := fmt.Sprintf(
+		"[Starfix] Context pressure — session %s\nMode: %s | Compaction #%d\nTriage: %s\nRecommended: %s\nWill %s in %ds — reply to override.",
+		shortID(sessionID), modeLabel, s.CompactionCount,
+		result.Reason, result.Action, result.Action, cfg.TimeoutSeconds)
+	telegram.Send(cfg.TelegramBinary, msg)
+
+	spawnWatchReply(baseDir, sessionID, cfg.LogPath)
+}
+
 // HandlePreCompact processes the PreCompact hook event.
 //
 // Context restoration (compact-pending marker) always runs regardless of mode.
@@ -78,33 +187,14 @@ func HandlePreCompact(input Input, cfg *config.Config, baseDir string) {
 	mode := activeMode(cfg)
 
 	if mode == modeInteractive {
-		// No autonomous operation — log and exit. No counting, no Telegram, no escalation.
 		logEvent(cfg.LogPath, input.SessionID, "COMPACT", "compaction (interactive — context marker written)")
 		s.Save()
 		return
 	}
 
-	modeLabel := "autonomous"
-	if mode == modeRalph {
-		modeLabel = "ralph"
-	}
+	modeLabel := modeLabelFor(mode)
 
-	// Detect new ralph/autonomous loop: if the lock file is newer than the
-	// state file's last modification, a fresh loop has started — reset the
-	// compaction counter so escalation thresholds apply from zero.
-	lockPath := cfg.RalphLockPath
-	if mode == modeAutonomous {
-		lockPath = cfg.AutonomousLockPath
-	}
-	if lockInfo, err := os.Stat(lockPath); err == nil {
-		if stateInfo, err := os.Stat(s.StateFile()); err == nil {
-			if lockInfo.ModTime().After(stateInfo.ModTime()) {
-				logEvent(cfg.LogPath, input.SessionID, "RESET",
-					fmt.Sprintf("new %s loop detected — resetting compaction count from %d", modeLabel, s.CompactionCount))
-				s.ResetCompactionCount()
-			}
-		}
-	}
+	detectNewLoop(s, mode, cfg, input.SessionID)
 
 	// Atomically increment and save to prevent race conditions.
 	if err := s.IncrementCompactionCount(); err != nil {
@@ -116,53 +206,10 @@ func HandlePreCompact(input Input, cfg *config.Config, baseDir string) {
 	summaryThreshold, escalationThreshold := thresholds(mode, cfg)
 
 	if s.CompactionCount >= summaryThreshold && cfg.TelegramEnabled {
-		msg := fmt.Sprintf("[Starfix] Compaction #%d (%s) — session %s\nTimestamp: %s",
-			s.CompactionCount, modeLabel, shortID(input.SessionID),
-			time.Now().UTC().Format(time.RFC3339))
-		telegram.Send(cfg.TelegramBinary, msg)
+		sendCompactionSummary(s, cfg, modeLabel, input.SessionID)
 	}
 
 	if s.CompactionCount >= escalationThreshold && !s.EscalationPending {
-		taskContent, _ := os.ReadFile(cfg.TaskQueuePath)
-		result := triage.Assess(triage.Input{
-			CompactionCount:  s.CompactionCount,
-			TaskQueueContent: string(taskContent),
-		})
-
-		s.EscalationPending = true
-		s.TriageDefault = result.Action
-		s.EscalationSentAt = time.Now().UTC()
-		s.Save()
-
-		if cfg.TelegramEnabled {
-			msg := fmt.Sprintf(
-				"[Starfix] Context pressure — session %s\nMode: %s | Compaction #%d\nTriage: %s\nRecommended: %s\nWill %s in %ds — reply to override.",
-				shortID(input.SessionID), modeLabel, s.CompactionCount,
-				result.Reason, result.Action, result.Action, cfg.TimeoutSeconds)
-			telegram.Send(cfg.TelegramBinary, msg)
-
-			// Kill any existing watch-reply for this session before spawning a new one.
-			pidFile := filepath.Join(baseDir, "sessions", input.SessionID, "watch-reply.pid")
-			if data, err := os.ReadFile(pidFile); err == nil {
-				if pid, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil {
-					if proc, err := os.FindProcess(pid); err == nil {
-						proc.Kill() // best-effort; ignore error if already dead
-					}
-				}
-			}
-
-			self, _ := os.Executable()
-			cmd := exec.Command(self, "watch-reply", input.SessionID)
-			if err := cmd.Start(); err != nil {
-				logEvent(cfg.LogPath, input.SessionID, "ERROR", fmt.Sprintf("start watch-reply: %v", err))
-				return
-			}
-
-			// Write PID file; if it fails, kill the spawned process and log the error.
-			if err := os.WriteFile(pidFile, []byte(strconv.Itoa(cmd.Process.Pid)), 0644); err != nil {
-				cmd.Process.Kill()
-				logEvent(cfg.LogPath, input.SessionID, "ERROR", fmt.Sprintf("write PID file: %v", err))
-			}
-		}
+		handleEscalation(s, cfg, modeLabel, input.SessionID, baseDir)
 	}
 }
