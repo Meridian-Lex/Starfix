@@ -41,16 +41,24 @@ func activeMode(cfg *config.Config) operationalMode {
 }
 
 // thresholds returns (summary, escalation) counts for the given mode.
+// Zero mode-specific values fall back to the global SummaryThreshold/EscalationThreshold.
 func thresholds(mode operationalMode, cfg *config.Config) (summary, escalation int) {
 	switch mode {
 	case modeRalph:
-		return cfg.RalphSummaryThreshold, cfg.RalphEscalationThreshold
+		summary, escalation = cfg.RalphSummaryThreshold, cfg.RalphEscalationThreshold
 	case modeAutonomous:
-		return cfg.AutonomousSummaryThreshold, cfg.AutonomousEscalationThreshold
+		summary, escalation = cfg.AutonomousSummaryThreshold, cfg.AutonomousEscalationThreshold
 	default:
-		// fallback — not used in interactive mode but kept for completeness
 		return cfg.SummaryThreshold, cfg.EscalationThreshold
 	}
+	// Fall back to global thresholds when mode-specific values are unset (zero).
+	if summary == 0 {
+		summary = cfg.SummaryThreshold
+	}
+	if escalation == 0 {
+		escalation = cfg.EscalationThreshold
+	}
+	return summary, escalation
 }
 
 func fileExists(path string) bool {
@@ -89,10 +97,16 @@ func detectNewLoop(s *state.SessionState, mode operationalMode, cfg *config.Conf
 		return
 	}
 	if lockInfo.ModTime().After(stateInfo.ModTime()) {
-		logEvent(cfg.LogPath, sessionID, "RESET",
-			fmt.Sprintf("new %s loop detected — resetting compaction count from %d",
-				modeLabelFor(mode), s.CompactionCount))
-		s.ResetCompactionCount()
+		prevCount := s.CompactionCount
+		if err := s.ResetCompactionCount(); err != nil {
+			logEvent(cfg.LogPath, sessionID, "ERROR",
+				fmt.Sprintf("failed to reset compaction count from %d for new %s loop: %v",
+					prevCount, modeLabelFor(mode), err))
+		} else {
+			logEvent(cfg.LogPath, sessionID, "RESET",
+				fmt.Sprintf("new %s loop detected — reset compaction count from %d",
+					modeLabelFor(mode), prevCount))
+		}
 	}
 }
 
@@ -126,8 +140,10 @@ func spawnWatchReply(baseDir, sessionID, logPath string) {
 	pidFile := filepath.Join(baseDir, "sessions", sessionID, "watch-reply.pid")
 	killExistingWatchReply(pidFile)
 
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command
+	// Safe: os.Executable() returns the path to the current binary, not user input.
 	self, _ := os.Executable()
-	cmd := exec.Command(self, "watch-reply", sessionID)
+	cmd := exec.Command(self, "watch-reply", sessionID) // #nosec G204
 	if err := cmd.Start(); err != nil {
 		logEvent(logPath, sessionID, "ERROR", fmt.Sprintf("start watch-reply: %v", err))
 		return
@@ -187,8 +203,11 @@ func HandlePreCompact(input Input, cfg *config.Config, baseDir string) {
 	mode := activeMode(cfg)
 
 	if mode == modeInteractive {
+		// No autonomous operation — log and exit. No counting, no Telegram, no escalation.
 		logEvent(cfg.LogPath, input.SessionID, "COMPACT", "compaction (interactive — context marker written)")
-		s.Save()
+		if err := s.Save(); err != nil {
+			logEvent(cfg.LogPath, input.SessionID, "ERROR", fmt.Sprintf("save session state: %v", err))
+		}
 		return
 	}
 

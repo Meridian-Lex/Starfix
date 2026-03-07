@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/meridian-lex/starfix/internal/config"
 	"github.com/meridian-lex/starfix/internal/hook"
@@ -80,6 +81,93 @@ func TestPreCompact_IncrementsCount_AutonomousMode(t *testing.T) {
 	}
 }
 
+func TestPreCompact_ResetsCount_NewRalphLoop(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	writeLock(t, cfg.RalphLockPath)
+	input := hookInput("session-ralph-reset")
+
+	// Run 3 compactions to build up count.
+	for i := 0; i < 3; i++ {
+		hook.HandlePreCompact(input, cfg, dir)
+	}
+	s, _ := state.Load(dir, "session-ralph-reset")
+	if s.CompactionCount != 3 {
+		t.Fatalf("expected CompactionCount 3 before reset, got %d", s.CompactionCount)
+	}
+
+	// Simulate a new ralph loop by touching the lock file so its mtime is after
+	// the state file mtime.
+	stateFile := s.StateFile()
+	past := time.Now().Add(-10 * time.Second)
+	os.Chtimes(stateFile, past, past)
+	// Re-write lock to ensure it has a fresh mtime.
+	writeLock(t, cfg.RalphLockPath)
+
+	// Next compaction should reset before incrementing, resulting in count 1.
+	hook.HandlePreCompact(input, cfg, dir)
+	s2, _ := state.Load(dir, "session-ralph-reset")
+	if s2.CompactionCount != 1 {
+		t.Errorf("expected CompactionCount 1 after new loop reset, got %d", s2.CompactionCount)
+	}
+}
+
+func TestPreCompact_ResetsCount_NewAutonomousLoop(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	writeLock(t, cfg.AutonomousLockPath)
+	input := hookInput("session-auto-reset")
+
+	// Run 3 compactions to build up count.
+	for i := 0; i < 3; i++ {
+		hook.HandlePreCompact(input, cfg, dir)
+	}
+	s, _ := state.Load(dir, "session-auto-reset")
+	if s.CompactionCount != 3 {
+		t.Fatalf("expected CompactionCount 3 before reset, got %d", s.CompactionCount)
+	}
+
+	// Simulate a new autonomous loop by touching the lock file.
+	stateFile := s.StateFile()
+	past := time.Now().Add(-10 * time.Second)
+	os.Chtimes(stateFile, past, past)
+	writeLock(t, cfg.AutonomousLockPath)
+
+	// Next compaction should reset before incrementing, resulting in count 1.
+	hook.HandlePreCompact(input, cfg, dir)
+	s2, _ := state.Load(dir, "session-auto-reset")
+	if s2.CompactionCount != 1 {
+		t.Errorf("expected CompactionCount 1 after new loop reset, got %d", s2.CompactionCount)
+	}
+}
+
+func TestPreCompact_NoReset_OldLockFile(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	writeLock(t, cfg.RalphLockPath)
+	input := hookInput("session-ralph-old-lock")
+
+	// Run 3 compactions.
+	for i := 0; i < 3; i++ {
+		hook.HandlePreCompact(input, cfg, dir)
+	}
+	s, _ := state.Load(dir, "session-ralph-old-lock")
+	if s.CompactionCount != 3 {
+		t.Fatalf("expected CompactionCount 3 before check, got %d", s.CompactionCount)
+	}
+
+	// Set lock file mtime to the past (older than state file) -- should NOT reset.
+	past := time.Now().Add(-10 * time.Second)
+	os.Chtimes(cfg.RalphLockPath, past, past)
+
+	// Next compaction should just increment to 4, no reset.
+	hook.HandlePreCompact(input, cfg, dir)
+	s2, _ := state.Load(dir, "session-ralph-old-lock")
+	if s2.CompactionCount != 4 {
+		t.Errorf("expected CompactionCount 4 (no reset for old lock), got %d", s2.CompactionCount)
+	}
+}
+
 func TestPreCompact_RalphTakesPrecedenceOverAutonomous(t *testing.T) {
 	// When both locks are present, ralph thresholds (tighter) apply.
 	dir := t.TempDir()
@@ -127,6 +215,29 @@ func TestPreCompact_SetsEscalationAtThreshold(t *testing.T) {
 	}
 	if s2.TriageDefault != "continue" && s2.TriageDefault != "park" {
 		t.Errorf("TriageDefault should be set, got %q", s2.TriageDefault)
+	}
+}
+
+func TestPreCompact_ThresholdFallback_ZeroModeSpecific(t *testing.T) {
+	// When mode-specific thresholds are zero, global thresholds should apply.
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	cfg.RalphSummaryThreshold = 0
+	cfg.RalphEscalationThreshold = 0
+	cfg.SummaryThreshold = 2
+	cfg.EscalationThreshold = 3
+	cfg.TelegramEnabled = false
+	writeLock(t, cfg.RalphLockPath)
+	input := hookInput("session-fallback")
+
+	// 3 compactions should trigger escalation at the global threshold (3).
+	for i := 0; i < 3; i++ {
+		hook.HandlePreCompact(input, cfg, dir)
+	}
+
+	s, _ := state.Load(dir, "session-fallback")
+	if !s.EscalationPending {
+		t.Error("EscalationPending should be true — global fallback threshold reached")
 	}
 }
 

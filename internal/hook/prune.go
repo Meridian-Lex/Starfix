@@ -13,6 +13,8 @@ func pruneOldSessions(baseDir string, maxAge time.Duration, logPath, currentSess
 	sessionsDir := filepath.Join(baseDir, "sessions")
 	entries, err := os.ReadDir(sessionsDir)
 	if err != nil {
+		logEvent(logPath, currentSessionID, "PRUNE_FAIL",
+			fmt.Sprintf("failed to read sessions directory %s: %v", sessionsDir, err))
 		return
 	}
 	cutoff := time.Now().Add(-maxAge)
