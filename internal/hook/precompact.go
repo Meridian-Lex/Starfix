@@ -84,8 +84,8 @@ func HandlePreCompact(input Input, cfg *config.Config, baseDir string) {
 		return
 	}
 
-	s.CompactionCount++
-	if err := s.Save(); err != nil {
+	// Atomically increment and save to prevent race conditions.
+	if err := s.IncrementCompactionCount(); err != nil {
 		logEvent(cfg.LogPath, input.SessionID, "ERROR", fmt.Sprintf("save state: %v", err))
 	}
 
@@ -136,8 +136,15 @@ func HandlePreCompact(input Input, cfg *config.Config, baseDir string) {
 
 			self, _ := os.Executable()
 			cmd := exec.Command(self, "watch-reply", input.SessionID)
-			if err := cmd.Start(); err == nil {
-				os.WriteFile(pidFile, []byte(strconv.Itoa(cmd.Process.Pid)), 0644)
+			if err := cmd.Start(); err != nil {
+				logEvent(cfg.LogPath, input.SessionID, "ERROR", fmt.Sprintf("start watch-reply: %v", err))
+				return
+			}
+
+			// Write PID file; if it fails, kill the spawned process and log the error.
+			if err := os.WriteFile(pidFile, []byte(strconv.Itoa(cmd.Process.Pid)), 0644); err != nil {
+				cmd.Process.Kill()
+				logEvent(cfg.LogPath, input.SessionID, "ERROR", fmt.Sprintf("write PID file: %v", err))
 			}
 		}
 	}

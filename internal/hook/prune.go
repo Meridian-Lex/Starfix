@@ -1,6 +1,7 @@
 package hook
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -25,9 +26,12 @@ func pruneOldSessions(baseDir string, maxAge time.Duration, logPath, currentSess
 		}
 		if info.ModTime().Before(cutoff) {
 			sessionDir := filepath.Join(sessionsDir, e.Name())
-			if err := os.RemoveAll(sessionDir); err == nil {
+			if err := os.RemoveAll(sessionDir); err != nil {
+				logEvent(logPath, currentSessionID, "PRUNE_FAIL",
+					fmt.Sprintf("failed to remove session %s: %v", e.Name(), err))
+			} else {
 				logEvent(logPath, currentSessionID, "PRUNE",
-					"removed stale session "+e.Name())
+					fmt.Sprintf("removed session %s", e.Name()))
 			}
 		}
 	}

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -20,6 +21,7 @@ type SessionState struct {
 
 	baseDir   string
 	sessionID string
+	mu        sync.Mutex `json:"-"`
 }
 
 // Load reads session state from disk, returning defaults if no file exists.
@@ -47,11 +49,22 @@ func Load(baseDir, sessionID string) (*SessionState, error) {
 
 // Save writes session state to disk.
 func (s *SessionState) Save() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(s.stateFile(), data, 0644)
+}
+
+// IncrementCompactionCount atomically increments the compaction count and saves state.
+func (s *SessionState) IncrementCompactionCount() error {
+	s.mu.Lock()
+	s.CompactionCount++
+	s.mu.Unlock()
+	return s.Save()
 }
 
 // Dir returns the session-specific directory.
@@ -65,6 +78,11 @@ func (s *SessionState) stateFile() string {
 
 func (s *SessionState) markerFile() string {
 	return filepath.Join(s.Dir(), "compact-pending")
+}
+
+// MarkerFile returns the path to the compact-pending marker file.
+func (s *SessionState) MarkerFile() string {
+	return s.markerFile()
 }
 
 // WriteMarker creates the compact-pending marker file.

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	starfixctx "github.com/meridian-lex/starfix/internal/context"
@@ -37,7 +39,7 @@ func HandleSessionStart(input Input, cfg *config.Config, baseDir string) string 
 	}
 
 	// Check for stale marker (e.g. from a crashed SessionStart).
-	markerInfo, err := os.Stat(filepath.Join(s.Dir(), "compact-pending"))
+	markerInfo, err := os.Stat(s.MarkerFile())
 	if err == nil && time.Since(markerInfo.ModTime()) > 4*time.Hour {
 		logEvent(cfg.LogPath, input.SessionID, "WARN",
 			"compact-pending marker is stale (>4h) — deleting without injection")
@@ -68,7 +70,20 @@ func HandleSessionStart(input Input, cfg *config.Config, baseDir string) string 
 
 	s.DeleteMarker()
 	s.Save()
-	os.Remove(filepath.Join(s.Dir(), "watch-reply.pid"))
+
+	// Kill any running watch-reply process before removing the PID file.
+	pidFile := filepath.Join(s.Dir(), "watch-reply.pid")
+	if data, err := os.ReadFile(pidFile); err == nil {
+		if pid, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil {
+			if proc, err := os.FindProcess(pid); err == nil {
+				if err := proc.Signal(os.Interrupt); err != nil {
+					// SIGINT failed; try SIGKILL.
+					proc.Kill()
+				}
+			}
+		}
+	}
+	os.Remove(pidFile)
 
 	logEvent(cfg.LogPath, input.SessionID, "INJECT", "context injected via sessionstart")
 
