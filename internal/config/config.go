@@ -19,9 +19,21 @@ type Config struct {
 	TelegramInboundLog string `yaml:"telegram_inbound_log"`
 	TelegramAdmiralID  int64  `yaml:"telegram_admiral_id"`
 
-	// Thresholds
+	// Thresholds — global fallback (used if mode-specific thresholds are zero)
 	SummaryThreshold    int `yaml:"summary_threshold"`
 	EscalationThreshold int `yaml:"escalation_threshold"`
+
+	// Per-mode thresholds — only count compactions during autonomous operations.
+	// Ralph loop thresholds (tighter — intra-session spin is a red flag).
+	RalphSummaryThreshold    int `yaml:"ralph_summary_threshold"`
+	RalphEscalationThreshold int `yaml:"ralph_escalation_threshold"`
+	// Autonomous mode thresholds (more tolerant — multi-session, compaction is expected).
+	AutonomousSummaryThreshold    int `yaml:"autonomous_summary_threshold"`
+	AutonomousEscalationThreshold int `yaml:"autonomous_escalation_threshold"`
+
+	// Lock file paths for mode detection
+	AutonomousLockPath string `yaml:"autonomous_lock_path"`
+	RalphLockPath      string `yaml:"ralph_lock_path"`
 
 	// Timeout
 	TimeoutSeconds int `yaml:"timeout_seconds"`
@@ -44,13 +56,19 @@ func defaults() Config {
 		TelegramBinary:      filepath.Join(home, ".local/bin/telegram-notify"),
 		TelegramInboundLog:  filepath.Join(home, "meridian-home/logs/telegram-inbound.log"),
 		TelegramAdmiralID:   121956871,
-		SummaryThreshold:    2,
-		EscalationThreshold: 3,
-		TimeoutSeconds:      300,
-		LogPath:             filepath.Join(home, "meridian-home/logs/starfix.log"),
-		MemoryPath:          filepath.Join(home, "meridian-home/lex-internal/state/MEMORY.md"),
-		TaskQueuePath:       filepath.Join(home, "meridian-home/lex-internal/state/TASK-QUEUE.md"),
-		StatePath:           filepath.Join(home, "meridian-home/lex-internal/state/STATE.md"),
+		SummaryThreshold:              2,
+		EscalationThreshold:           3,
+		RalphSummaryThreshold:         4,
+		RalphEscalationThreshold:      8,
+		AutonomousSummaryThreshold:    6,
+		AutonomousEscalationThreshold: 12,
+		AutonomousLockPath:            filepath.Join(home, "meridian-home/lex-internal/state/AUTONOMOUS-MODE.lock"),
+		RalphLockPath:                 filepath.Join(home, "meridian-home/lex-internal/state/RALPH-LOOP.lock"),
+		TimeoutSeconds:                300,
+		LogPath:                       filepath.Join(home, "meridian-home/logs/starfix.log"),
+		MemoryPath:                    filepath.Join(home, "meridian-home/lex-internal/state/MEMORY.md"),
+		TaskQueuePath:                 filepath.Join(home, "meridian-home/lex-internal/state/TASK-QUEUE.md"),
+		StatePath:                     filepath.Join(home, "meridian-home/lex-internal/state/STATE.md"),
 	}
 }
 
