@@ -20,16 +20,45 @@ func writeLock(t *testing.T, path string) {
 }
 
 func TestPreCompact_WritesMarker(t *testing.T) {
-	dir := t.TempDir()
-	cfg := testConfig(dir)
-	input := hookInput("session-test-1")
+	tests := []struct {
+		name  string
+		setup func(*testing.T, *config.Config)
+	}{
+		{
+			name: "Interactive",
+			setup: func(t *testing.T, cfg *config.Config) {
+				// No lock files — interactive mode.
+			},
+		},
+		{
+			name: "Ralph",
+			setup: func(t *testing.T, cfg *config.Config) {
+				writeLock(t, cfg.RalphLockPath)
+			},
+		},
+		{
+			name: "Autonomous",
+			setup: func(t *testing.T, cfg *config.Config) {
+				writeLock(t, cfg.AutonomousLockPath)
+			},
+		},
+	}
 
-	// Marker should be written regardless of mode.
-	hook.HandlePreCompact(input, cfg, dir)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cfg := testConfig(dir)
+			input := hookInput("session-test-1")
+			tt.setup(t, cfg)
 
-	s, _ := state.Load(dir, "session-test-1")
-	if !s.MarkerExists() {
-		t.Error("marker file should exist after precompact in any mode")
+			// Marker should be written regardless of mode.
+			hook.HandlePreCompact(input, cfg, dir)
+
+			s, _ := state.Load(dir, "session-test-1")
+			if !s.MarkerExists() {
+				t.Error("marker file should exist after precompact in any mode")
+			}
+		})
 	}
 }
 
@@ -185,5 +214,7 @@ func testConfig(dir string) *config.Config {
 		TelegramEnabled:               false,
 		LogPath:                       filepath.Join(dir, "starfix.log"),
 		TaskQueuePath:                 filepath.Join(dir, "TASK-QUEUE.md"),
+		StatePath:                     filepath.Join(dir, "STATE.md"),
+		MemoryPath:                    filepath.Join(dir, "MEMORY.md"),
 	}
 }

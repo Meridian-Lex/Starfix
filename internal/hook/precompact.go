@@ -45,14 +45,23 @@ func thresholds(mode operationalMode, cfg *config.Config) (summary, escalation i
 	case modeAutonomous:
 		return cfg.AutonomousSummaryThreshold, cfg.AutonomousEscalationThreshold
 	default:
-		// fallback — not used in interactive mode but kept for completeness
+		// fallback for any mode not explicitly handled (e.g., interactive mode)
 		return cfg.SummaryThreshold, cfg.EscalationThreshold
 	}
 }
 
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
-	return err == nil
+	if err == nil {
+		return true
+	}
+	if os.IsNotExist(err) {
+		return false
+	}
+	// Permission errors or other stat errors: treat as present but unreadable.
+	// Log and return true to avoid spurious mode misdetection.
+	logEvent("", "", "WARN", fmt.Sprintf("stat %s: %v (treating as present)", path, err))
+	return true
 }
 
 // HandlePreCompact processes the PreCompact hook event.
@@ -77,7 +86,6 @@ func HandlePreCompact(input Input, cfg *config.Config, baseDir string) {
 	if mode == modeInteractive {
 		// No autonomous operation — log and exit. No counting, no Telegram, no escalation.
 		logEvent(cfg.LogPath, input.SessionID, "COMPACT", "compaction (interactive — context marker written)")
-		s.Save()
 		return
 	}
 
@@ -141,7 +149,9 @@ func HandlePreCompact(input Input, cfg *config.Config, baseDir string) {
 
 			self, _ := os.Executable()
 			cmd := exec.Command(self, "watch-reply", input.SessionID)
-			cmd.Start()
+			if err := cmd.Start(); err != nil {
+				logEvent(cfg.LogPath, input.SessionID, "ERROR", fmt.Sprintf("spawn watch-reply: %v", err))
+			}
 		}
 	}
 }
