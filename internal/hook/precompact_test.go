@@ -104,20 +104,24 @@ func TestPreCompact_RalphEpochReset(t *testing.T) {
 	cfg.TelegramEnabled = false
 	input := hookInput("session-epoch")
 
-	// --- First ralph loop: 3 compactions ---
+	// --- First ralph loop: drive count past escalation threshold (8) ---
 	writeLock(t, cfg.RalphLockPath)
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 9; i++ {
 		hook.HandlePreCompact(input, cfg, dir)
 	}
 	s1, _ := state.Load(dir, "session-epoch")
-	if s1.CompactionCount != 3 {
-		t.Errorf("after first loop: got count %d, want 3", s1.CompactionCount)
+	if s1.CompactionCount != 9 {
+		t.Errorf("after first loop: got count %d, want 9", s1.CompactionCount)
+	}
+	if !s1.EscalationPending {
+		t.Error("EscalationPending should be true after exceeding escalation threshold")
 	}
 
 	// --- Simulate loop end + new loop start: recreate lock with newer mtime ---
 	// Remove and rewrite the lock file so its mtime is strictly newer.
+	// Use 1.1s sleep to cover filesystems with 1-second mtime granularity (e.g., HFS+).
 	os.Remove(cfg.RalphLockPath)
-	time.Sleep(10 * time.Millisecond) // ensure mtime advances
+	time.Sleep(1100 * time.Millisecond)
 	writeLock(t, cfg.RalphLockPath)
 
 	// --- Second ralph loop: first compaction should reset count to 1 ---
@@ -167,6 +171,38 @@ func TestPreCompact_RalphTakesPrecedenceOverAutonomous(t *testing.T) {
 	s, _ := state.Load(dir, "session-both")
 	if !s.EscalationPending {
 		t.Error("EscalationPending should be true — ralph escalation threshold reached")
+	}
+}
+
+func TestPreCompact_RalphEpochReset_WithBothLocks(t *testing.T) {
+	// When both ralph and autonomous locks are present, a ralph epoch reset
+	// should still clear state correctly (ralph takes precedence).
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	cfg.TelegramEnabled = false
+	input := hookInput("session-both-epoch")
+
+	writeLock(t, cfg.RalphLockPath)
+	writeLock(t, cfg.AutonomousLockPath)
+
+	// Build up compaction count under ralph+autonomous.
+	for i := 0; i < 3; i++ {
+		hook.HandlePreCompact(input, cfg, dir)
+	}
+	s1, _ := state.Load(dir, "session-both-epoch")
+	if s1.CompactionCount != 3 {
+		t.Errorf("before epoch reset: got count %d, want 3", s1.CompactionCount)
+	}
+
+	// Recreate ralph lock (new epoch) while autonomous lock remains.
+	os.Remove(cfg.RalphLockPath)
+	time.Sleep(1100 * time.Millisecond)
+	writeLock(t, cfg.RalphLockPath)
+
+	hook.HandlePreCompact(input, cfg, dir)
+	s2, _ := state.Load(dir, "session-both-epoch")
+	if s2.CompactionCount != 1 {
+		t.Errorf("after epoch reset with both locks: got count %d, want 1", s2.CompactionCount)
 	}
 }
 

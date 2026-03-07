@@ -38,19 +38,33 @@ func activeMode(cfg *config.Config) operationalMode {
 }
 
 // thresholds returns (summary, escalation) counts for the given mode.
+// Mode-specific values take precedence; if a mode-specific threshold is zero
+// (unset in config), the global fallback is used instead.
 func thresholds(mode operationalMode, cfg *config.Config) (summary, escalation int) {
 	switch mode {
 	case modeRalph:
-		return cfg.RalphSummaryThreshold, cfg.RalphEscalationThreshold
+		summary, escalation = cfg.RalphSummaryThreshold, cfg.RalphEscalationThreshold
 	case modeAutonomous:
-		return cfg.AutonomousSummaryThreshold, cfg.AutonomousEscalationThreshold
+		summary, escalation = cfg.AutonomousSummaryThreshold, cfg.AutonomousEscalationThreshold
 	default:
-		// fallback for any mode not explicitly handled (e.g., interactive mode)
+		// General fallback for any mode without explicit thresholds (including interactive).
 		return cfg.SummaryThreshold, cfg.EscalationThreshold
 	}
+
+	// If a mode-specific threshold is zero (not configured), fall back to the global value.
+	if summary == 0 {
+		summary = cfg.SummaryThreshold
+	}
+	if escalation == 0 {
+		escalation = cfg.EscalationThreshold
+	}
+	return
 }
 
 func fileExists(path string) bool {
+	if path == "" {
+		return false
+	}
 	_, err := os.Stat(path)
 	if err == nil {
 		return true
@@ -59,8 +73,8 @@ func fileExists(path string) bool {
 		return false
 	}
 	// Permission errors or other stat errors: treat as present but unreadable.
-	// Log and return true to avoid spurious mode misdetection.
-	logEvent("", "", "WARN", fmt.Sprintf("stat %s: %v (treating as present)", path, err))
+	// Use stderr since logEvent requires a valid logPath which is not available here.
+	fmt.Fprintf(os.Stderr, "[starfix] WARN: stat %s: %v (treating as present)\n", path, err)
 	return true
 }
 
