@@ -133,6 +133,7 @@ func killExistingWatchReply(pidFile string) {
 	if proc, err := os.FindProcess(pid); err == nil {
 		proc.Kill() // best-effort; ignore error if already dead
 	}
+	_ = os.Remove(pidFile) // remove stale PID file so it cannot be reused
 }
 
 // spawnWatchReply starts a watch-reply subprocess and records its PID file.
@@ -152,6 +153,7 @@ func spawnWatchReply(baseDir, sessionID, logPath string) {
 	// Write PID file; if it fails, kill the spawned process and log the error.
 	if err := os.WriteFile(pidFile, []byte(strconv.Itoa(cmd.Process.Pid)), 0644); err != nil {
 		cmd.Process.Kill()
+		_ = os.Remove(pidFile)
 		logEvent(logPath, sessionID, "ERROR", fmt.Sprintf("write PID file: %v", err))
 	}
 }
@@ -178,7 +180,9 @@ func handleEscalation(s *state.SessionState, cfg *config.Config, modeLabel, sess
 		"[Starfix] Context pressure — session %s\nMode: %s | Compaction #%d\nTriage: %s\nRecommended: %s\nWill %s in %ds — reply to override.",
 		shortID(sessionID), modeLabel, s.CompactionCount,
 		result.Reason, result.Action, result.Action, cfg.TimeoutSeconds)
-	telegram.Send(cfg.TelegramBinary, msg)
+	if err := telegram.Send(cfg.TelegramBinary, msg); err != nil {
+		logEvent(cfg.LogPath, sessionID, "ERROR", fmt.Sprintf("send escalation: %v", err))
+	}
 
 	spawnWatchReply(baseDir, sessionID, cfg.LogPath)
 }

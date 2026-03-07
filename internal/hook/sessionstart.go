@@ -44,7 +44,10 @@ func HandleSessionStart(input Input, cfg *config.Config, baseDir string) string 
 		logEvent(cfg.LogPath, input.SessionID, "WARN",
 			"compact-pending marker is stale (>4h) — deleting without injection")
 		s.DeleteMarker()
-		s.Save()
+		if err := s.Save(); err != nil {
+			logEvent(cfg.LogPath, input.SessionID, "ERROR",
+				fmt.Sprintf("failed to save state after stale marker cleanup: %v", err))
+		}
 		return ""
 	}
 
