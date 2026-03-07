@@ -167,8 +167,10 @@ func TestPreCompact_ResetsCount_NewRalphLoop(t *testing.T) {
 
 	// Simulate a new ralph loop: remove the lock file and create a fresh one.
 	// The new file gets a different inode, producing a different epoch token
-	// regardless of filesystem mtime granularity.
+	// regardless of filesystem mtime granularity. The sleep provides cross-platform
+	// CI compatibility consistent with other epoch-reset tests.
 	os.Remove(cfg.RalphLockPath)
+	time.Sleep(1100 * time.Millisecond)
 	writeLock(t, cfg.RalphLockPath)
 
 	// Next compaction should reset before incrementing, resulting in count 1.

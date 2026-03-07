@@ -175,17 +175,14 @@ func detectRalphLoopReset(s *state.SessionState, cfg *config.Config, sessionID s
 			// Cross-mode transition: autonomous counts accumulated before ralph started.
 			logEvent(cfg.LogPath, sessionID, "RESET",
 				fmt.Sprintf("ralph mode entered from autonomous (count was %d)", s.CompactionCount))
-			if err := s.ResetLoop(); err != nil {
-				logEvent(cfg.LogPath, sessionID, "ERROR",
-					fmt.Sprintf("failed to reset on ralph entry: %v", err))
-				return
-			}
+			s.CompactionCount = 0
+			s.EscalationPending = false
 		}
 		s.LastRalphEpochToken = token
 		s.LastRalphEpochStart = lockMtime
 		if err := s.Save(); err != nil {
 			logEvent(cfg.LogPath, sessionID, "ERROR",
-				fmt.Sprintf("failed to persist ralph epoch token: %v", err))
+				fmt.Sprintf("failed to persist ralph epoch state: %v", err))
 		}
 		return
 	}
@@ -220,7 +217,9 @@ func sendCompactionSummary(s *state.SessionState, cfg *config.Config, modeLabel,
 	msg := fmt.Sprintf("[Starfix] Compaction #%d (%s) — session %s\nTimestamp: %s",
 		s.CompactionCount, modeLabel, shortID(sessionID),
 		time.Now().UTC().Format(time.RFC3339))
-	telegram.Send(cfg.TelegramBinary, msg)
+	if err := telegram.Send(cfg.TelegramBinary, msg); err != nil {
+		logEvent(cfg.LogPath, sessionID, "WARN", fmt.Sprintf("telegram summary: %v", err))
+	}
 }
 
 // killExistingWatchReply terminates any previously-spawned watch-reply process
