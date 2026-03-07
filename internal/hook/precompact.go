@@ -84,14 +84,31 @@ func HandlePreCompact(input Input, cfg *config.Config, baseDir string) {
 		return
 	}
 
-	// Atomically increment and save to prevent race conditions.
-	if err := s.IncrementCompactionCount(); err != nil {
-		logEvent(cfg.LogPath, input.SessionID, "ERROR", fmt.Sprintf("save state: %v", err))
-	}
-
 	modeLabel := "autonomous"
 	if mode == modeRalph {
 		modeLabel = "ralph"
+	}
+
+	// Detect new ralph/autonomous loop: if the lock file is newer than the
+	// state file's last modification, a fresh loop has started — reset the
+	// compaction counter so escalation thresholds apply from zero.
+	lockPath := cfg.RalphLockPath
+	if mode == modeAutonomous {
+		lockPath = cfg.AutonomousLockPath
+	}
+	if lockInfo, err := os.Stat(lockPath); err == nil {
+		if stateInfo, err := os.Stat(s.StateFile()); err == nil {
+			if lockInfo.ModTime().After(stateInfo.ModTime()) {
+				logEvent(cfg.LogPath, input.SessionID, "RESET",
+					fmt.Sprintf("new %s loop detected — resetting compaction count from %d", modeLabel, s.CompactionCount))
+				s.ResetCompactionCount()
+			}
+		}
+	}
+
+	// Atomically increment and save to prevent race conditions.
+	if err := s.IncrementCompactionCount(); err != nil {
+		logEvent(cfg.LogPath, input.SessionID, "ERROR", fmt.Sprintf("save state: %v", err))
 	}
 	logEvent(cfg.LogPath, input.SessionID, "COMPACT",
 		fmt.Sprintf("compaction #%d (%s)", s.CompactionCount, modeLabel))
