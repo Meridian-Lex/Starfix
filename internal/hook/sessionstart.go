@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"time"
 
 	starfixctx "github.com/meridian-lex/starfix/internal/context"
@@ -21,6 +19,63 @@ type sessionStartOutput struct {
 type sessionStartSpecific struct {
 	HookEventName     string `json:"hookEventName"`
 	AdditionalContext string `json:"additionalContext"`
+}
+
+// isStaleMarker returns true if the marker file is older than the given max age.
+func isStaleMarker(markerPath string, maxAge time.Duration) bool {
+	info, err := os.Stat(markerPath)
+	if err != nil {
+		return false
+	}
+	return time.Since(info.ModTime()) > maxAge
+}
+
+// buildPayload constructs the context injection payload from config and escalation state.
+func buildPayload(s *state.SessionState, cfg *config.Config, cwd string) string {
+	payload := starfixctx.BuildCore(cfg)
+	if cfg.ProjectContext && cwd != "" {
+		if projectLayer := starfixctx.BuildProject(cwd); projectLayer != "" {
+			payload += "\n" + projectLayer
+		}
+	}
+
+	if s.ReplyReceived {
+		payload += fmt.Sprintf("\n--- ADMIRAL REPLY ---\nFleet Admiral replied: %s\n", s.ReplyText)
+		s.ReplyReceived = false
+		s.ReplyText = ""
+		s.EscalationPending = false
+	} else if s.TimeoutFired {
+		if s.TimeoutAction == "park" {
+			payload += "\n--- STARFIX DIRECTIVE ---\nNo Admiral reply received within timeout. Triage recommended PARK. Please wrap up current work and stop.\n"
+		}
+		s.TimeoutFired = false
+		s.EscalationPending = false
+	}
+
+	return payload
+}
+
+// cleanupWatchReply terminates any previously-spawned watch-reply process and
+// removes its PID file.
+func cleanupWatchReply(sessionDir string) {
+	pidFile := filepath.Join(sessionDir, "watch-reply.pid")
+	killExistingWatchReply(pidFile)
+	os.Remove(pidFile)
+}
+
+// formatOutput marshals the sessionstart hook output as JSON.
+func formatOutput(payload string) string {
+	out := sessionStartOutput{
+		HookSpecificOutput: sessionStartSpecific{
+			HookEventName:     "SessionStart",
+			AdditionalContext: payload,
+		},
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return ""
+	}
+	return string(b)
 }
 
 // HandleSessionStart processes the SessionStart hook event.
@@ -39,63 +94,28 @@ func HandleSessionStart(input Input, cfg *config.Config, baseDir string) string 
 	}
 
 	// Check for stale marker (e.g. from a crashed SessionStart).
-	markerInfo, err := os.Stat(s.MarkerFile())
-	if err == nil && time.Since(markerInfo.ModTime()) > 4*time.Hour {
+	if isStaleMarker(s.MarkerFile(), 4*time.Hour) {
 		logEvent(cfg.LogPath, input.SessionID, "WARN",
 			"compact-pending marker is stale (>4h) — deleting without injection")
 		s.DeleteMarker()
-		s.Save()
+		if err := s.Save(); err != nil {
+			logEvent(cfg.LogPath, input.SessionID, "ERROR",
+				fmt.Sprintf("failed to save state after stale marker cleanup: %v", err))
+		}
 		return ""
 	}
 
-	payload := starfixctx.BuildCore(cfg)
-	if cfg.ProjectContext && input.CWD != "" {
-		if projectLayer := starfixctx.BuildProject(input.CWD); projectLayer != "" {
-			payload += "\n" + projectLayer
-		}
-	}
-
-	if s.ReplyReceived {
-		payload += fmt.Sprintf("\n--- ADMIRAL REPLY ---\nFleet Admiral replied: %s\n", s.ReplyText)
-		s.ReplyReceived = false
-		s.ReplyText = ""
-		s.EscalationPending = false
-	} else if s.TimeoutFired {
-		if s.TimeoutAction == "park" {
-			payload += "\n--- STARFIX DIRECTIVE ---\nNo Admiral reply received within timeout. Triage recommended PARK. Please wrap up current work and stop.\n"
-		}
-		s.TimeoutFired = false
-		s.EscalationPending = false
-	}
+	payload := buildPayload(s, cfg, input.CWD)
 
 	s.DeleteMarker()
-	s.Save()
-
-	// Kill any running watch-reply process before removing the PID file.
-	pidFile := filepath.Join(s.Dir(), "watch-reply.pid")
-	if data, err := os.ReadFile(pidFile); err == nil {
-		if pid, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil {
-			if proc, err := os.FindProcess(pid); err == nil {
-				if err := proc.Signal(os.Interrupt); err != nil {
-					// SIGINT failed; try SIGKILL.
-					proc.Kill()
-				}
-			}
-		}
+	if err := s.Save(); err != nil {
+		logEvent(cfg.LogPath, input.SessionID, "ERROR",
+			fmt.Sprintf("failed to save state after context injection: %v", err))
 	}
-	os.Remove(pidFile)
+
+	cleanupWatchReply(s.Dir())
 
 	logEvent(cfg.LogPath, input.SessionID, "INJECT", "context injected via sessionstart")
 
-	out := sessionStartOutput{
-		HookSpecificOutput: sessionStartSpecific{
-			HookEventName:     "SessionStart",
-			AdditionalContext: payload,
-		},
-	}
-	b, err := json.Marshal(out)
-	if err != nil {
-		return ""
-	}
-	return string(b)
+	return formatOutput(payload)
 }
