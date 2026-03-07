@@ -70,6 +70,30 @@ func TestMarker_WriteAndCheck(t *testing.T) {
 	}
 }
 
+func TestResetCompactionCount(t *testing.T) {
+	dir := t.TempDir()
+	s, err := state.Load(dir, "test-reset")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.IncrementCompactionCount()
+	s.IncrementCompactionCount()
+	if s.CompactionCount != 2 {
+		t.Fatalf("expected 2, got %d", s.CompactionCount)
+	}
+	s.ResetCompactionCount()
+	if s.CompactionCount != 0 {
+		t.Fatalf("expected 0 after reset, got %d", s.CompactionCount)
+	}
+	s2, err := state.Load(dir, "test-reset")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s2.CompactionCount != 0 {
+		t.Fatalf("expected 0 on reload, got %d", s2.CompactionCount)
+	}
+}
+
 func TestState_SessionDir(t *testing.T) {
 	dir := t.TempDir()
 	s, _ := state.Load(dir, "session-abc")

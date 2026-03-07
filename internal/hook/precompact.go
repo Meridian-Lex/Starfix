@@ -90,33 +90,114 @@ func modeLabelFor(mode operationalMode) string {
 	return "autonomous"
 }
 
-// detectRalphEpochReset checks whether a new ralph loop has started by comparing
-// the lock file mtime against the last known epoch start. Resets the compaction
-// counter and clears escalation state if a fresh loop is detected.
-func detectRalphEpochReset(s *state.SessionState, cfg *config.Config, sessionID string) {
+// lockPathFor returns the lock file path for the given operational mode.
+func lockPathFor(mode operationalMode, cfg *config.Config) string {
+	if mode == modeAutonomous {
+		return cfg.AutonomousLockPath
+	}
+	return cfg.RalphLockPath
+}
+
+// detectNewLoop checks whether a new autonomous/ralph loop has started and
+// resets the compaction counter if a fresh loop is detected.
+//
+// For ralph mode, this uses the lock file mtime tracked via LastRalphEpochStart:
+//   - If LastRalphEpochStart is zero, ralph is being entered for the first time
+//     this session; any accumulated autonomous count is cleared (cross-mode reset).
+//   - If the ralph lock has a newer mtime than LastRalphEpochStart, a new ralph loop
+//     started within the session; reset and record the new epoch.
+//
+// For autonomous mode, the lock file mtime is compared against the state file mtime:
+// if the lock is newer than the last state write, a new autonomous loop started.
+func detectNewLoop(s *state.SessionState, mode operationalMode, cfg *config.Config, sessionID string) {
+	if mode == modeRalph {
+		detectRalphLoopReset(s, cfg, sessionID)
+		return
+	}
+	// Autonomous mode: compare lock mtime against state file mtime.
+	lockInfo, err := os.Stat(cfg.AutonomousLockPath)
+	if err != nil {
+		return
+	}
+	stateInfo, err := os.Stat(s.StateFile())
+	if err != nil {
+		return
+	}
+	if lockInfo.ModTime().After(stateInfo.ModTime()) {
+		prevCount := s.CompactionCount
+		if err := s.ResetLoop(); err != nil {
+			logEvent(cfg.LogPath, sessionID, "ERROR",
+				fmt.Sprintf("failed to reset compaction count from %d for new autonomous loop: %v",
+					prevCount, err))
+		} else {
+			logEvent(cfg.LogPath, sessionID, "RESET",
+				fmt.Sprintf("new autonomous loop detected — reset compaction count from %d", prevCount))
+		}
+	}
+}
+
+// detectRalphLoopReset checks for a new or first-time ralph loop and resets state
+// if a fresh loop is detected.
+//
+//   - If LastRalphEpochStart is zero, this is the first ralph compaction this session.
+//     Any autonomous counts accumulated prior are cleared (cross-mode transition).
+//     LastRalphEpochStart is set to the current lock mtime to anchor the epoch.
+//   - Otherwise, lock mtime is compared against the state file mtime (same approach
+//     as autonomous mode): if the lock is newer than the last state write, the ralph
+//     lock was recreated after the previous compaction — a new loop started.
+func detectRalphLoopReset(s *state.SessionState, cfg *config.Config, sessionID string) {
 	info, err := os.Stat(cfg.RalphLockPath)
 	if err != nil {
 		return
 	}
-	if !info.ModTime().After(s.LastRalphEpochStart) {
+	lockMtime := info.ModTime()
+
+	if s.LastRalphEpochStart.IsZero() {
+		// First time entering ralph mode this session.
+		if s.CompactionCount > 0 {
+			// Cross-mode transition: autonomous counts accumulated before ralph started.
+			logEvent(cfg.LogPath, sessionID, "RESET",
+				fmt.Sprintf("ralph mode entered from autonomous (count was %d)", s.CompactionCount))
+			if err := s.ResetLoop(); err != nil {
+				logEvent(cfg.LogPath, sessionID, "ERROR",
+					fmt.Sprintf("failed to reset on ralph entry: %v", err))
+				return
+			}
+		}
+		s.LastRalphEpochStart = lockMtime
+		if err := s.Save(); err != nil {
+			logEvent(cfg.LogPath, sessionID, "ERROR",
+				fmt.Sprintf("failed to persist ralph epoch start: %v", err))
+		}
 		return
 	}
-	if !s.LastRalphEpochStart.IsZero() {
-		// Genuine epoch transition: ralph lock was recreated since last seen.
-		if s.CompactionCount > 0 {
+
+	// Within an existing ralph epoch: check if the lock was recreated since the
+	// last state write (state file mtime is updated on every IncrementCompactionCount).
+	stateInfo, err := os.Stat(s.StateFile())
+	if err != nil {
+		return
+	}
+	if lockMtime.After(stateInfo.ModTime()) {
+		// Ralph lock was recreated — new loop started within this session.
+		prevCount := s.CompactionCount
+		if prevCount > 0 {
 			logEvent(cfg.LogPath, sessionID, "RESET",
 				fmt.Sprintf("new ralph epoch (lock mtime %s) — resetting count from %d",
-					info.ModTime().UTC().Format(time.RFC3339), s.CompactionCount))
+					lockMtime.UTC().Format(time.RFC3339), prevCount))
 		}
-	} else if s.CompactionCount > 0 {
-		// Cross-mode transition: autonomous counts accumulated, now entering ralph
-		// for the first time in this session. Log so the reset is auditable.
-		logEvent(cfg.LogPath, sessionID, "RESET",
-			fmt.Sprintf("ralph mode entered from autonomous (count was %d)", s.CompactionCount))
+		if err := s.ResetLoop(); err != nil {
+			logEvent(cfg.LogPath, sessionID, "ERROR",
+				fmt.Sprintf("failed to reset compaction count from %d for new ralph epoch: %v",
+					prevCount, err))
+			return
+		}
+		s.LastRalphEpochStart = lockMtime
+		if err := s.Save(); err != nil {
+			logEvent(cfg.LogPath, sessionID, "ERROR",
+				fmt.Sprintf("failed to persist ralph epoch start: %v", err))
+		}
 	}
-	s.CompactionCount = 0
-	s.EscalationPending = false
-	s.LastRalphEpochStart = info.ModTime()
 }
 
 // sendCompactionSummary sends a Telegram notification when the compaction count
@@ -142,6 +223,7 @@ func killExistingWatchReply(pidFile string) {
 	if proc, err := os.FindProcess(pid); err == nil {
 		proc.Kill() // best-effort; ignore error if already dead
 	}
+	_ = os.Remove(pidFile) // remove stale PID file so it cannot be reused
 }
 
 // spawnWatchReply starts a watch-reply subprocess and records its PID file.
@@ -149,8 +231,10 @@ func spawnWatchReply(baseDir, sessionID, logPath string) {
 	pidFile := filepath.Join(baseDir, "sessions", sessionID, "watch-reply.pid")
 	killExistingWatchReply(pidFile)
 
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command
+	// Safe: os.Executable() returns the path to the current binary, not user input.
 	self, _ := os.Executable()
-	cmd := exec.Command(self, "watch-reply", sessionID)
+	cmd := exec.Command(self, "watch-reply", sessionID) // #nosec G204
 	if err := cmd.Start(); err != nil {
 		logEvent(logPath, sessionID, "ERROR", fmt.Sprintf("start watch-reply: %v", err))
 		return
@@ -159,6 +243,7 @@ func spawnWatchReply(baseDir, sessionID, logPath string) {
 	// Write PID file; if it fails, kill the spawned process and log the error.
 	if err := os.WriteFile(pidFile, []byte(strconv.Itoa(cmd.Process.Pid)), 0644); err != nil {
 		cmd.Process.Kill()
+		_ = os.Remove(pidFile)
 		logEvent(logPath, sessionID, "ERROR", fmt.Sprintf("write PID file: %v", err))
 	}
 }
@@ -187,7 +272,9 @@ func handleEscalation(s *state.SessionState, cfg *config.Config, modeLabel, sess
 		"[Starfix] Context pressure — session %s\nMode: %s | Compaction #%d\nTriage: %s\nRecommended: %s\nWill %s in %ds — reply to override.",
 		shortID(sessionID), modeLabel, s.CompactionCount,
 		result.Reason, result.Action, result.Action, cfg.TimeoutSeconds)
-	telegram.Send(cfg.TelegramBinary, msg)
+	if err := telegram.Send(cfg.TelegramBinary, msg); err != nil {
+		logEvent(cfg.LogPath, sessionID, "ERROR", fmt.Sprintf("send escalation: %v", err))
+	}
 
 	spawnWatchReply(baseDir, sessionID, cfg.LogPath)
 }
@@ -214,21 +301,15 @@ func HandlePreCompact(input Input, cfg *config.Config, baseDir string) {
 	if mode == modeInteractive {
 		// No autonomous operation — log and exit. No counting, no Telegram, no escalation.
 		logEvent(cfg.LogPath, input.SessionID, "COMPACT", "compaction (interactive — context marker written)")
+		if err := s.Save(); err != nil {
+			logEvent(cfg.LogPath, input.SessionID, "ERROR", fmt.Sprintf("save session state: %v", err))
+		}
 		return
 	}
 
 	modeLabel := modeLabelFor(mode)
 
-	// Ralph epoch detection: if the ralph lock file has been recreated since we
-	// last saw it (new loop started within the same session), reset the counter
-	// and clear any prior escalation so the fresh loop gets a clean slate.
-	// Note: autonomous mode intentionally has NO epoch reset — autonomous compactions
-	// accumulate across the session lifetime by design. The higher autonomous thresholds
-	// are calibrated for this accumulation pattern. Ralph loops are short-lived and
-	// self-contained, so each new loop starts with a clean count.
-	if mode == modeRalph {
-		detectRalphEpochReset(s, cfg, input.SessionID)
-	}
+	detectNewLoop(s, mode, cfg, input.SessionID)
 
 	// Atomically increment and save to prevent race conditions.
 	if err := s.IncrementCompactionCount(); err != nil {
