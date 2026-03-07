@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/meridian-lex/starfix/internal/config"
@@ -121,9 +124,21 @@ func HandlePreCompact(input Input, cfg *config.Config, baseDir string) {
 				result.Reason, result.Action, result.Action, cfg.TimeoutSeconds)
 			telegram.Send(cfg.TelegramBinary, msg)
 
+			// Kill any existing watch-reply for this session before spawning a new one.
+			pidFile := filepath.Join(baseDir, "sessions", input.SessionID, "watch-reply.pid")
+			if data, err := os.ReadFile(pidFile); err == nil {
+				if pid, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil {
+					if proc, err := os.FindProcess(pid); err == nil {
+						proc.Kill() // best-effort; ignore error if already dead
+					}
+				}
+			}
+
 			self, _ := os.Executable()
 			cmd := exec.Command(self, "watch-reply", input.SessionID)
-			cmd.Start()
+			if err := cmd.Start(); err == nil {
+				os.WriteFile(pidFile, []byte(strconv.Itoa(cmd.Process.Pid)), 0644)
+			}
 		}
 	}
 }
