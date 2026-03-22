@@ -1,8 +1,6 @@
 package hook
 
 import (
-	"fmt"
-
 	starfixctx "github.com/meridian-lex/starfix/internal/context"
 	"github.com/meridian-lex/starfix/internal/config"
 	"github.com/meridian-lex/starfix/internal/state"
@@ -17,20 +15,8 @@ func HandleUserPromptSubmit(input Input, cfg *config.Config, baseDir string) str
 		return ""
 	}
 
-	var payload string
-
-	if s.ReplyReceived {
-		payload += fmt.Sprintf("\n--- ADMIRAL REPLY ---\nFleet Admiral replied: %s\n", s.ReplyText)
-		s.ReplyReceived = false
-		s.ReplyText = ""
-		s.EscalationPending = false
-		s.Save()
-	} else if s.TimeoutFired {
-		if s.TimeoutAction == "park" {
-			payload += "\n--- STARFIX DIRECTIVE ---\nNo Admiral reply received within timeout. Triage recommended PARK. Please wrap up current work and stop.\n"
-		}
-		s.TimeoutFired = false
-		s.EscalationPending = false
+	payload := applyPendingSignals(s, "")
+	if payload != "" {
 		s.Save()
 	}
 
