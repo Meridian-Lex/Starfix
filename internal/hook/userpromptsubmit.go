@@ -15,8 +15,9 @@ func HandleUserPromptSubmit(input Input, cfg *config.Config, baseDir string) str
 		return ""
 	}
 
+	hadSignal := s.ReplyReceived || s.TimeoutFired
 	payload := applyPendingSignals(s, "")
-	if payload != "" {
+	if hadSignal {
 		s.Save()
 	}
 

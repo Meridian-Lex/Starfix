@@ -22,7 +22,7 @@ func TestAssess_HighCount_NoTask(t *testing.T) {
 
 func TestAssess_LowCount_ActiveTask(t *testing.T) {
 	result := triage.Assess(triage.Input{
-		CompactionCount:  2,
+		CompactionCount:  triage.DefaultContinueBelow,
 		TaskQueueContent: "- [in_progress] Implement feature X\n  Clear completion: yes",
 	})
 	if result.Action != "continue" {
@@ -32,11 +32,11 @@ func TestAssess_LowCount_ActiveTask(t *testing.T) {
 
 func TestAssess_HighCount_ActiveTask(t *testing.T) {
 	result := triage.Assess(triage.Input{
-		CompactionCount:  5,
+		CompactionCount:  triage.DefaultParkAbove,
 		TaskQueueContent: "- [in_progress] Implement feature X",
 	})
 	if result.Action != "park" {
-		t.Errorf("Action: got %q, want park for count>=5", result.Action)
+		t.Errorf("Action: got %q, want park for count>=%d", result.Action, triage.DefaultParkAbove)
 	}
 }
 
@@ -95,16 +95,16 @@ func TestAssess_NoModeTag_WhenModeEmpty(t *testing.T) {
 }
 
 func TestAssess_ZeroThresholds_UseDefaults(t *testing.T) {
-	// Zero Thresholds should fall back to built-in defaults (ParkAbove=5, ContinueBelow=2).
-	parkResult := triage.Assess(triage.Input{CompactionCount: 5})
+	// Zero Thresholds should fall back to DefaultParkAbove and DefaultContinueBelow.
+	parkResult := triage.Assess(triage.Input{CompactionCount: triage.DefaultParkAbove})
 	if parkResult.Action != "park" {
-		t.Errorf("Action: got %q, want park at default ParkAbove=5", parkResult.Action)
+		t.Errorf("Action: got %q, want park at DefaultParkAbove=%d", parkResult.Action, triage.DefaultParkAbove)
 	}
 	continueResult := triage.Assess(triage.Input{
-		CompactionCount:  2,
+		CompactionCount:  triage.DefaultContinueBelow,
 		TaskQueueContent: "in_progress",
 	})
 	if continueResult.Action != "continue" {
-		t.Errorf("Action: got %q, want continue at default ContinueBelow=2", continueResult.Action)
+		t.Errorf("Action: got %q, want continue at DefaultContinueBelow=%d", continueResult.Action, triage.DefaultContinueBelow)
 	}
 }

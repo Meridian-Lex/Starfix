@@ -63,3 +63,27 @@ func TestUserPromptSubmit_ParkFlag_InjectsDirective(t *testing.T) {
 		t.Errorf("expected park directive in output, got: %q", output)
 	}
 }
+
+func TestUserPromptSubmit_TimeoutContinue_PersistsCleared(t *testing.T) {
+	// Regression: when TimeoutAction="continue", payload is empty but flags
+	// must still be persisted to disk so they don't re-trigger on the next prompt.
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	input := hookInput("session-ups-timeout-cont")
+
+	s, _ := state.Load(dir, "session-ups-timeout-cont")
+	s.TimeoutFired = true
+	s.TimeoutAction = "continue"
+	s.EscalationPending = true
+	s.Save()
+
+	hook.HandleUserPromptSubmit(input, cfg, dir)
+
+	s2, _ := state.Load(dir, "session-ups-timeout-cont")
+	if s2.TimeoutFired {
+		t.Error("TimeoutFired should be cleared and persisted after handling")
+	}
+	if s2.EscalationPending {
+		t.Error("EscalationPending should be cleared and persisted after handling")
+	}
+}

@@ -5,14 +5,18 @@ import (
 	"strings"
 )
 
+// Default triage thresholds used when no config override is provided.
+const (
+	DefaultParkAbove     = 5
+	DefaultContinueBelow = 2
+)
+
 // Thresholds holds the park/continue decision boundaries for triage.
-// Zero values fall back to built-in defaults.
+// Zero values fall back to DefaultParkAbove and DefaultContinueBelow.
 type Thresholds struct {
 	// ParkAbove: compaction count at which the session is unconditionally parked.
-	// Default: 5
 	ParkAbove int
 	// ContinueBelow: compaction count at or below which an in-progress task allows continue.
-	// Default: 2
 	ContinueBelow int
 }
 
@@ -20,14 +24,14 @@ func (t Thresholds) parkAbove() int {
 	if t.ParkAbove > 0 {
 		return t.ParkAbove
 	}
-	return 5
+	return DefaultParkAbove
 }
 
 func (t Thresholds) continueBelow() int {
 	if t.ContinueBelow > 0 {
 		return t.ContinueBelow
 	}
-	return 2
+	return DefaultContinueBelow
 }
 
 // Input holds the signals used to assess the session situation.
