@@ -405,3 +405,53 @@ func testConfig(dir string) *config.Config {
 		MemoryPath:                    filepath.Join(dir, "MEMORY.md"),
 	}
 }
+
+func TestPreCompact_SendsSummaryViaTelegram(t *testing.T) {
+	// Create a fake telegram binary that writes its args to a file.
+	dir := t.TempDir()
+	fakeBin := filepath.Join(dir, "fake-telegram")
+	outFile := filepath.Join(dir, "telegram-out.txt")
+	script := "#!/bin/sh\necho \"$@\" >> " + outFile + "\n"
+	os.WriteFile(fakeBin, []byte(script), 0755)
+
+	cfg := testConfig(dir)
+	cfg.TelegramEnabled = true
+	cfg.TelegramBinary = fakeBin
+	cfg.RalphSummaryThreshold = 1   // summary after first compaction
+	cfg.RalphEscalationThreshold = 99 // don't escalate
+	writeLock(t, cfg.RalphLockPath)
+	input := hookInput("session-tg-summary")
+
+	hook.HandlePreCompact(input, cfg, dir)
+
+	data, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("telegram binary was not called: %v", err)
+	}
+	if len(data) == 0 {
+		t.Error("telegram binary produced no output")
+	}
+}
+
+func TestPreCompact_AutonomousEscalationWithTelegram(t *testing.T) {
+	// Verifies autonomous mode escalation fires when threshold is reached.
+	
+	dir := t.TempDir()
+	fakeBin := filepath.Join(dir, "fake-telegram")
+	os.WriteFile(fakeBin, []byte("#!/bin/sh\nexit 0\n"), 0755)
+
+	cfg := testConfig(dir)
+	cfg.TelegramEnabled = true
+	cfg.TelegramBinary = fakeBin
+	cfg.AutonomousEscalationThreshold = 1
+	writeLock(t, cfg.AutonomousLockPath)
+	input := hookInput("session-autonomous-escalation")
+
+	
+	hook.HandlePreCompact(input, cfg, dir)
+
+	s, _ := state.Load(dir, "session-autonomous-escalation")
+	if !s.EscalationPending {
+		t.Error("EscalationPending should be true after escalation threshold reached")
+	}
+}

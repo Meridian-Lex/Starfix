@@ -102,3 +102,56 @@ func TestState_SessionDir(t *testing.T) {
 		t.Errorf("Dir: got %q, want %q", s.Dir(), expected)
 	}
 }
+
+func TestResetLoop(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := state.Load(dir, "session-resetloop")
+	s.IncrementCompactionCount()
+	s.IncrementCompactionCount()
+	s.EscalationPending = true
+
+	if err := s.ResetLoop(); err != nil {
+		t.Fatalf("ResetLoop failed: %v", err)
+	}
+	if s.CompactionCount != 0 {
+		t.Errorf("CompactionCount: got %d, want 0", s.CompactionCount)
+	}
+	if s.EscalationPending {
+		t.Error("EscalationPending should be false after ResetLoop")
+	}
+
+	// Verify persisted.
+	s2, _ := state.Load(dir, "session-resetloop")
+	if s2.CompactionCount != 0 {
+		t.Errorf("persisted CompactionCount: got %d, want 0", s2.CompactionCount)
+	}
+}
+
+func TestStateFile_ReturnsPath(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := state.Load(dir, "session-sf")
+	sf := s.StateFile()
+	if sf == "" {
+		t.Fatal("StateFile returned empty string")
+	}
+	// Should end with state.json inside the session dir.
+	if !filepath.IsAbs(sf) {
+		t.Errorf("StateFile should be absolute, got %q", sf)
+	}
+}
+
+func TestMarkerFile_ReturnsPath(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := state.Load(dir, "session-mf")
+	mf := s.MarkerFile()
+	if mf == "" {
+		t.Fatal("MarkerFile returned empty string")
+	}
+}
+
+func TestDefaultBaseDir_ReturnsNonEmpty(t *testing.T) {
+	d := state.DefaultBaseDir()
+	if d == "" {
+		t.Fatal("DefaultBaseDir returned empty string")
+	}
+}

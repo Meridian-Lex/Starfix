@@ -91,14 +91,6 @@ func modeLabelFor(mode operationalMode) string {
 	return "autonomous"
 }
 
-// lockPathFor returns the lock file path for the given operational mode.
-func lockPathFor(mode operationalMode, cfg *config.Config) string {
-	if mode == modeAutonomous {
-		return cfg.AutonomousLockPath
-	}
-	return cfg.RalphLockPath
-}
-
 // detectNewLoop checks whether a new autonomous/ralph loop has started and
 // resets the compaction counter if a fresh loop is detected.
 //
