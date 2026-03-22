@@ -265,9 +265,15 @@ func spawnWatchReply(baseDir, sessionID, logPath string) {
 // when compaction count reaches the escalation threshold.
 func handleEscalation(s *state.SessionState, cfg *config.Config, modeLabel, sessionID, baseDir string) {
 	taskContent, _ := os.ReadFile(cfg.TaskQueuePath)
+	parkAbove, continueBelow := cfg.TriageThresholdsFor(modeLabel)
 	result := triage.Assess(triage.Input{
 		CompactionCount:  s.CompactionCount,
 		TaskQueueContent: string(taskContent),
+		Mode:             modeLabel,
+		Thresholds: triage.Thresholds{
+			ParkAbove:     parkAbove,
+			ContinueBelow: continueBelow,
+		},
 	})
 
 	s.EscalationPending = true

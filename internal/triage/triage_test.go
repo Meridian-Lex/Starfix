@@ -1,6 +1,7 @@
 package triage_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/meridian-lex/starfix/internal/triage"
@@ -50,5 +51,60 @@ func TestAssess_AlwaysHasReason(t *testing.T) {
 		if r.Reason == "" {
 			t.Errorf("Reason empty for input %+v", c)
 		}
+	}
+}
+
+func TestAssess_CustomThresholds_ParkAbove(t *testing.T) {
+	// With ParkAbove=10, count=8 with no active task should continue.
+	result := triage.Assess(triage.Input{
+		CompactionCount: 8,
+		Thresholds:      triage.Thresholds{ParkAbove: 10, ContinueBelow: 2},
+	})
+	if result.Action != "continue" {
+		t.Errorf("Action: got %q, want continue — count 8 below custom ParkAbove 10", result.Action)
+	}
+}
+
+func TestAssess_CustomThresholds_ContinueBelow(t *testing.T) {
+	// With ContinueBelow=5, count=4 with active task should continue.
+	result := triage.Assess(triage.Input{
+		CompactionCount:  4,
+		TaskQueueContent: "in_progress",
+		Thresholds:       triage.Thresholds{ParkAbove: 10, ContinueBelow: 5},
+	})
+	if result.Action != "continue" {
+		t.Errorf("Action: got %q, want continue — count 4 within custom ContinueBelow 5", result.Action)
+	}
+}
+
+func TestAssess_ModeTagInReason(t *testing.T) {
+	result := triage.Assess(triage.Input{
+		CompactionCount: 6,
+		Mode:            "ralph",
+	})
+	if !strings.Contains(result.Reason, "[ralph]") {
+		t.Errorf("Reason %q should contain mode tag [ralph]", result.Reason)
+	}
+}
+
+func TestAssess_NoModeTag_WhenModeEmpty(t *testing.T) {
+	result := triage.Assess(triage.Input{CompactionCount: 0})
+	if strings.Contains(result.Reason, "[") {
+		t.Errorf("Reason %q should not contain mode tag when Mode is empty", result.Reason)
+	}
+}
+
+func TestAssess_ZeroThresholds_UseDefaults(t *testing.T) {
+	// Zero Thresholds should fall back to built-in defaults (ParkAbove=5, ContinueBelow=2).
+	parkResult := triage.Assess(triage.Input{CompactionCount: 5})
+	if parkResult.Action != "park" {
+		t.Errorf("Action: got %q, want park at default ParkAbove=5", parkResult.Action)
+	}
+	continueResult := triage.Assess(triage.Input{
+		CompactionCount:  2,
+		TaskQueueContent: "in_progress",
+	})
+	if continueResult.Action != "continue" {
+		t.Errorf("Action: got %q, want continue at default ContinueBelow=2", continueResult.Action)
 	}
 }

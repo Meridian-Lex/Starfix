@@ -32,6 +32,19 @@ type Config struct {
 	AutonomousSummaryThreshold    int `yaml:"autonomous_summary_threshold"`
 	AutonomousEscalationThreshold int `yaml:"autonomous_escalation_threshold"`
 
+	// Triage thresholds — used by triage.Assess to decide park/continue.
+	// ParkAbove: unconditional park at this compaction count (default 5).
+	// ContinueBelow: continue with active task at or below this count (default 2).
+	// Mode-specific overrides take precedence; zero means use global/built-in default.
+	TriageParkAbove     int `yaml:"triage_park_above"`
+	TriageContinueBelow int `yaml:"triage_continue_below"`
+
+	RalphTriageParkAbove     int `yaml:"ralph_triage_park_above"`
+	RalphTriageContinueBelow int `yaml:"ralph_triage_continue_below"`
+
+	AutonomousTriageParkAbove     int `yaml:"autonomous_triage_park_above"`
+	AutonomousTriageContinueBelow int `yaml:"autonomous_triage_continue_below"`
+
 	// Lock file paths for mode detection
 	AutonomousLockPath string `yaml:"autonomous_lock_path"`
 	RalphLockPath      string `yaml:"ralph_lock_path"`
@@ -86,6 +99,24 @@ func Load(path string) (*Config, error) {
 	}
 
 	return &cfg, nil
+}
+
+// TriageThresholdsFor returns the park/continue thresholds for the named mode.
+// Mode-specific values take precedence; falls back to global, then built-in defaults (zero).
+func (c *Config) TriageThresholdsFor(mode string) (parkAbove, continueBelow int) {
+	switch mode {
+	case "ralph":
+		parkAbove, continueBelow = c.RalphTriageParkAbove, c.RalphTriageContinueBelow
+	case "autonomous":
+		parkAbove, continueBelow = c.AutonomousTriageParkAbove, c.AutonomousTriageContinueBelow
+	}
+	if parkAbove == 0 {
+		parkAbove = c.TriageParkAbove
+	}
+	if continueBelow == 0 {
+		continueBelow = c.TriageContinueBelow
+	}
+	return
 }
 
 // DefaultPath returns the standard config file location.
