@@ -271,13 +271,16 @@ func TestPreCompact_RalphEpochReset_WithBothLocks(t *testing.T) {
 	writeLock(t, cfg.RalphLockPath)
 	writeLock(t, cfg.AutonomousLockPath)
 
-	// Build up compaction count under ralph+autonomous.
-	for i := 0; i < 3; i++ {
+	// Drive count past the ralph escalation threshold (8) to ensure EscalationPending is set.
+	for i := 0; i < 9; i++ {
 		hook.HandlePreCompact(input, cfg, dir)
 	}
 	s1, _ := state.Load(dir, "session-both-epoch")
-	if s1.CompactionCount != 3 {
-		t.Errorf("before epoch reset: got count %d, want 3", s1.CompactionCount)
+	if s1.CompactionCount != 9 {
+		t.Errorf("before epoch reset: got count %d, want 9", s1.CompactionCount)
+	}
+	if !s1.EscalationPending {
+		t.Error("EscalationPending should be true after exceeding ralph escalation threshold")
 	}
 
 	// Recreate ralph lock (new epoch) while autonomous lock remains.
@@ -289,6 +292,9 @@ func TestPreCompact_RalphEpochReset_WithBothLocks(t *testing.T) {
 	s2, _ := state.Load(dir, "session-both-epoch")
 	if s2.CompactionCount != 1 {
 		t.Errorf("after epoch reset with both locks: got count %d, want 1", s2.CompactionCount)
+	}
+	if s2.EscalationPending {
+		t.Error("EscalationPending should be cleared after epoch reset with both locks")
 	}
 }
 
