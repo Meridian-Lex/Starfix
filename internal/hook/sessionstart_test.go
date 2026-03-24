@@ -26,7 +26,10 @@ func TestSessionStart_WithMarker_InjectsContext(t *testing.T) {
 	cfg := testConfig(dir)
 	input := hookInput("session-ss-2")
 
-	s, _ := state.Load(dir, "session-ss-2")
+	s, err := state.Load(dir, "session-ss-2")
+	if err != nil {
+		t.Fatalf("state.Load failed: %v", err)
+	}
 	s.WriteMarker()
 
 	output := hook.HandleSessionStart(input, cfg, dir)
@@ -41,12 +44,18 @@ func TestSessionStart_WithMarker_DeletesMarker(t *testing.T) {
 	cfg := testConfig(dir)
 	input := hookInput("session-ss-3")
 
-	s, _ := state.Load(dir, "session-ss-3")
+	s, err := state.Load(dir, "session-ss-3")
+	if err != nil {
+		t.Fatalf("state.Load failed: %v", err)
+	}
 	s.WriteMarker()
 
 	hook.HandleSessionStart(input, cfg, dir)
 
-	s2, _ := state.Load(dir, "session-ss-3")
+	s2, err := state.Load(dir, "session-ss-3")
+	if err != nil {
+		t.Fatalf("state.Load failed: %v", err)
+	}
 	if s2.MarkerExists() {
 		t.Error("marker should be deleted after sessionstart")
 	}
@@ -57,7 +66,10 @@ func TestSessionStart_OutputIsValidJSON(t *testing.T) {
 	cfg := testConfig(dir)
 	input := hookInput("session-ss-4")
 
-	s, _ := state.Load(dir, "session-ss-4")
+	s, err := state.Load(dir, "session-ss-4")
+	if err != nil {
+		t.Fatalf("state.Load failed: %v", err)
+	}
 	s.WriteMarker()
 
 	output := hook.HandleSessionStart(input, cfg, dir)
@@ -75,12 +87,17 @@ func TestSessionStart_StaleMarker_SkipsInjection(t *testing.T) {
 	cfg := testConfig(dir)
 	input := hookInput("session-ss-stale")
 
-	s, _ := state.Load(dir, "session-ss-stale")
+	s, err := state.Load(dir, "session-ss-stale")
+	if err != nil {
+		t.Fatalf("state.Load failed: %v", err)
+	}
 	s.WriteMarker()
 
 	// Backdate the marker by 5 hours to make it stale (threshold is 4h).
 	past := time.Now().Add(-5 * time.Hour)
-	os.Chtimes(s.MarkerFile(), past, past)
+	if err := os.Chtimes(s.MarkerFile(), past, past); err != nil {
+		t.Fatalf("os.Chtimes failed: %v", err)
+	}
 
 	output := hook.HandleSessionStart(input, cfg, dir)
 	if output != "" {
@@ -88,7 +105,10 @@ func TestSessionStart_StaleMarker_SkipsInjection(t *testing.T) {
 	}
 
 	// Marker should be deleted.
-	s2, _ := state.Load(dir, "session-ss-stale")
+	s2, err := state.Load(dir, "session-ss-stale")
+	if err != nil {
+		t.Fatalf("state.Load failed: %v", err)
+	}
 	if s2.MarkerExists() {
 		t.Error("stale marker should be deleted by sessionstart")
 	}
@@ -99,12 +119,17 @@ func TestApplyPendingSignals_ReplyReceived(t *testing.T) {
 	cfg := testConfig(dir)
 	input := hookInput("session-ss-reply")
 
-	s, _ := state.Load(dir, "session-ss-reply")
+	s, err := state.Load(dir, "session-ss-reply")
+	if err != nil {
+		t.Fatalf("state.Load failed: %v", err)
+	}
 	s.ReplyReceived = true
 	s.ReplyText = "continue please"
 	s.EscalationPending = true
 	s.WriteMarker()
-	s.Save()
+	if err := s.Save(); err != nil {
+		t.Fatalf("s.Save failed: %v", err)
+	}
 
 	output := hook.HandleSessionStart(input, cfg, dir)
 	if !strings.Contains(output, "continue please") {
@@ -120,12 +145,17 @@ func TestApplyPendingSignals_TimeoutFired_Park(t *testing.T) {
 	cfg := testConfig(dir)
 	input := hookInput("session-ss-timeout")
 
-	s, _ := state.Load(dir, "session-ss-timeout")
+	s, err := state.Load(dir, "session-ss-timeout")
+	if err != nil {
+		t.Fatalf("state.Load failed: %v", err)
+	}
 	s.TimeoutFired = true
 	s.TimeoutAction = "park"
 	s.EscalationPending = true
 	s.WriteMarker()
-	s.Save()
+	if err := s.Save(); err != nil {
+		t.Fatalf("s.Save failed: %v", err)
+	}
 
 	output := hook.HandleSessionStart(input, cfg, dir)
 	if !strings.Contains(output, "STARFIX DIRECTIVE") {
@@ -138,11 +168,16 @@ func TestApplyPendingSignals_TimeoutFired_Continue(t *testing.T) {
 	cfg := testConfig(dir)
 	input := hookInput("session-ss-timeout-cont")
 
-	s, _ := state.Load(dir, "session-ss-timeout-cont")
+	s, err := state.Load(dir, "session-ss-timeout-cont")
+	if err != nil {
+		t.Fatalf("state.Load failed: %v", err)
+	}
 	s.TimeoutFired = true
 	s.TimeoutAction = "continue"
 	s.WriteMarker()
-	s.Save()
+	if err := s.Save(); err != nil {
+		t.Fatalf("s.Save failed: %v", err)
+	}
 
 	output := hook.HandleSessionStart(input, cfg, dir)
 	// No STARFIX DIRECTIVE for continue action, but output should still have STARFIX header.

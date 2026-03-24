@@ -110,10 +110,10 @@ func (c *Config) TriageThresholdsFor(mode string) (parkAbove, continueBelow int)
 	case "autonomous":
 		parkAbove, continueBelow = c.AutonomousTriageParkAbove, c.AutonomousTriageContinueBelow
 	}
-	if parkAbove == 0 {
+	if parkAbove <= 0 {
 		parkAbove = c.TriageParkAbove
 	}
-	if continueBelow == 0 {
+	if continueBelow <= 0 {
 		continueBelow = c.TriageContinueBelow
 	}
 	return

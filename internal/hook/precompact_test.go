@@ -435,22 +435,24 @@ func TestPreCompact_SendsSummaryViaTelegram(t *testing.T) {
 
 func TestPreCompact_AutonomousEscalationWithTelegram(t *testing.T) {
 	// Verifies autonomous mode escalation fires when threshold is reached.
-	
+	// Note: TelegramEnabled=false to avoid spawning watch-reply subprocess during testing.
 	dir := t.TempDir()
 	fakeBin := filepath.Join(dir, "fake-telegram")
 	os.WriteFile(fakeBin, []byte("#!/bin/sh\nexit 0\n"), 0755)
 
 	cfg := testConfig(dir)
-	cfg.TelegramEnabled = true
+	cfg.TelegramEnabled = false // Disable to avoid spawning watch-reply subprocess
 	cfg.TelegramBinary = fakeBin
 	cfg.AutonomousEscalationThreshold = 1
 	writeLock(t, cfg.AutonomousLockPath)
 	input := hookInput("session-autonomous-escalation")
 
-	
 	hook.HandlePreCompact(input, cfg, dir)
 
-	s, _ := state.Load(dir, "session-autonomous-escalation")
+	s, err := state.Load(dir, "session-autonomous-escalation")
+	if err != nil {
+		t.Fatalf("state.Load failed: %v", err)
+	}
 	if !s.EscalationPending {
 		t.Error("EscalationPending should be true after escalation threshold reached")
 	}
