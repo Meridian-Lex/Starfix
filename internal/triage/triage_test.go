@@ -70,7 +70,7 @@ func TestAssess_CustomThresholds_ContinueBelow(t *testing.T) {
 	// With ContinueBelow=5, count=4 with active task should continue.
 	result := triage.Assess(triage.Input{
 		CompactionCount:  4,
-		TaskQueueContent: "in_progress",
+		TaskQueueContent: "- [in_progress] Implement feature X",
 		Thresholds:       triage.Thresholds{ParkAbove: 10, ContinueBelow: 5},
 	})
 	if result.Action != "continue" {
@@ -105,7 +105,7 @@ func TestAssess_ZeroThresholds_UseDefaults(t *testing.T) {
 	}
 	continueResult := triage.Assess(triage.Input{
 		CompactionCount:  triage.DefaultContinueBelow,
-		TaskQueueContent: "in_progress",
+		TaskQueueContent: "- [in_progress] Implement feature X",
 	})
 	if continueResult.Action != "continue" {
 		t.Errorf("Action: got %q, want continue at DefaultContinueBelow=%d", continueResult.Action, triage.DefaultContinueBelow)
