@@ -62,3 +62,54 @@ func TestDefaultPath(t *testing.T) {
 		t.Fatal("DefaultPath returned empty string")
 	}
 }
+
+func TestTriageThresholdsFor_RalphSpecific(t *testing.T) {
+	cfg := &config.Config{
+		RalphTriageParkAbove:     10,
+		RalphTriageContinueBelow: 3,
+	}
+	park, cont := cfg.TriageThresholdsFor("ralph")
+	if park != 10 {
+		t.Errorf("ParkAbove: got %d, want 10", park)
+	}
+	if cont != 3 {
+		t.Errorf("ContinueBelow: got %d, want 3", cont)
+	}
+}
+
+func TestTriageThresholdsFor_AutonomousSpecific(t *testing.T) {
+	cfg := &config.Config{
+		AutonomousTriageParkAbove:     12,
+		AutonomousTriageContinueBelow: 4,
+	}
+	park, cont := cfg.TriageThresholdsFor("autonomous")
+	if park != 12 {
+		t.Errorf("ParkAbove: got %d, want 12", park)
+	}
+	if cont != 4 {
+		t.Errorf("ContinueBelow: got %d, want 4", cont)
+	}
+}
+
+func TestTriageThresholdsFor_FallsBackToGlobal(t *testing.T) {
+	cfg := &config.Config{
+		TriageParkAbove:     7,
+		TriageContinueBelow: 2,
+	}
+	// No ralph-specific values set — should use global.
+	park, cont := cfg.TriageThresholdsFor("ralph")
+	if park != 7 {
+		t.Errorf("ParkAbove: got %d, want 7 (global fallback)", park)
+	}
+	if cont != 2 {
+		t.Errorf("ContinueBelow: got %d, want 2 (global fallback)", cont)
+	}
+}
+
+func TestTriageThresholdsFor_ZeroReturnedWhenNoneSet(t *testing.T) {
+	cfg := &config.Config{}
+	park, cont := cfg.TriageThresholdsFor("unknown")
+	if park != 0 || cont != 0 {
+		t.Errorf("expected zeros when no thresholds set, got park=%d cont=%d", park, cont)
+	}
+}

@@ -85,3 +85,30 @@ func TestParseInboundLog_EmptyFile(t *testing.T) {
 		t.Fatal("should not find reply in empty file")
 	}
 }
+
+func TestSend_CallsBinary(t *testing.T) {
+	dir := t.TempDir()
+	outFile := filepath.Join(dir, "send-out.txt")
+	fakeBin := filepath.Join(dir, "fake-notify")
+	script := "#!/bin/sh\necho \"$@\" > " + outFile + "\n"
+	os.WriteFile(fakeBin, []byte(script), 0755)
+
+	err := telegram.Send(fakeBin, "hello fleet")
+	if err != nil {
+		t.Fatalf("Send failed: %v", err)
+	}
+	data, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("fake binary was not called: %v", err)
+	}
+	if string(data) != "hello fleet\n" {
+		t.Errorf("binary output: got %q, want %q", string(data), "hello fleet\n")
+	}
+}
+
+func TestSend_ErrorOnMissingBinary(t *testing.T) {
+	err := telegram.Send("/nonexistent/binary", "msg")
+	if err == nil {
+		t.Fatal("expected error for missing binary")
+	}
+}

@@ -31,14 +31,9 @@ func isStaleMarker(markerPath string, maxAge time.Duration) bool {
 }
 
 // buildPayload constructs the context injection payload from config and escalation state.
-func buildPayload(s *state.SessionState, cfg *config.Config, cwd string) string {
-	payload := starfixctx.BuildCore(cfg)
-	if cfg.ProjectContext && cwd != "" {
-		if projectLayer := starfixctx.BuildProject(cwd); projectLayer != "" {
-			payload += "\n" + projectLayer
-		}
-	}
-
+// applyPendingSignals appends any pending reply or timeout directive to payload
+// and clears the consumed signal flags on s. Returns the updated payload.
+func applyPendingSignals(s *state.SessionState, payload string) string {
 	if s.ReplyReceived {
 		payload += fmt.Sprintf("\n--- ADMIRAL REPLY ---\nFleet Admiral replied: %s\n", s.ReplyText)
 		s.ReplyReceived = false
@@ -51,8 +46,17 @@ func buildPayload(s *state.SessionState, cfg *config.Config, cwd string) string 
 		s.TimeoutFired = false
 		s.EscalationPending = false
 	}
-
 	return payload
+}
+
+func buildPayload(s *state.SessionState, cfg *config.Config, cwd string) string {
+	payload := starfixctx.BuildCore(cfg)
+	if cfg.ProjectContext && cwd != "" {
+		if projectLayer := starfixctx.BuildProject(cwd); projectLayer != "" {
+			payload += "\n" + projectLayer
+		}
+	}
+	return applyPendingSignals(s, payload)
 }
 
 // cleanupWatchReply terminates any previously-spawned watch-reply process and

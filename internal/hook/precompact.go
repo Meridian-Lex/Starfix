@@ -91,14 +91,6 @@ func modeLabelFor(mode operationalMode) string {
 	return "autonomous"
 }
 
-// lockPathFor returns the lock file path for the given operational mode.
-func lockPathFor(mode operationalMode, cfg *config.Config) string {
-	if mode == modeAutonomous {
-		return cfg.AutonomousLockPath
-	}
-	return cfg.RalphLockPath
-}
-
 // detectNewLoop checks whether a new autonomous/ralph loop has started and
 // resets the compaction counter if a fresh loop is detected.
 //
@@ -265,9 +257,15 @@ func spawnWatchReply(baseDir, sessionID, logPath string) {
 // when compaction count reaches the escalation threshold.
 func handleEscalation(s *state.SessionState, cfg *config.Config, modeLabel, sessionID, baseDir string) {
 	taskContent, _ := os.ReadFile(cfg.TaskQueuePath)
+	parkAbove, continueBelow := cfg.TriageThresholdsFor(modeLabel)
 	result := triage.Assess(triage.Input{
 		CompactionCount:  s.CompactionCount,
 		TaskQueueContent: string(taskContent),
+		Mode:             modeLabel,
+		Thresholds: triage.Thresholds{
+			ParkAbove:     parkAbove,
+			ContinueBelow: continueBelow,
+		},
 	})
 
 	s.EscalationPending = true
