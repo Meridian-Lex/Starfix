@@ -412,7 +412,9 @@ func TestPreCompact_SendsSummaryViaTelegram(t *testing.T) {
 	fakeBin := filepath.Join(dir, "fake-telegram")
 	outFile := filepath.Join(dir, "telegram-out.txt")
 	script := "#!/bin/sh\necho \"$@\" >> " + outFile + "\n"
-	os.WriteFile(fakeBin, []byte(script), 0755)
+	if err := os.WriteFile(fakeBin, []byte(script), 0755); err != nil {
+		t.Fatalf("os.WriteFile failed: %v", err)
+	}
 
 	cfg := testConfig(dir)
 	cfg.TelegramEnabled = true
@@ -438,7 +440,9 @@ func TestPreCompact_AutonomousEscalationWithTelegram(t *testing.T) {
 	// Note: TelegramEnabled=false to avoid spawning watch-reply subprocess during testing.
 	dir := t.TempDir()
 	fakeBin := filepath.Join(dir, "fake-telegram")
-	os.WriteFile(fakeBin, []byte("#!/bin/sh\nexit 0\n"), 0755)
+	if err := os.WriteFile(fakeBin, []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
+		t.Fatalf("os.WriteFile failed: %v", err)
+	}
 
 	cfg := testConfig(dir)
 	cfg.TelegramEnabled = false // Disable to avoid spawning watch-reply subprocess

@@ -91,7 +91,7 @@ func TestAssess_ModeTagInReason(t *testing.T) {
 func TestAssess_NoModeTag_WhenModeEmpty(t *testing.T) {
 	result := triage.Assess(triage.Input{CompactionCount: 0})
 	// Check that no bracketed mode token exists (e.g., no [ralph], [autonomous], etc.)
-	modePattern := regexp.MustCompile(`\[(?:[^\]]*mode[^\]]*)\]`)
+	modePattern := regexp.MustCompile(`\[(?:ralph|autonomous|interactive)\]`)
 	if modePattern.MatchString(result.Reason) {
 		t.Errorf("Reason %q should not contain bracketed mode tag when Mode is empty", result.Reason)
 	}
